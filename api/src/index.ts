@@ -9,6 +9,6 @@ app.use(express.json());
 
 app.use("/health", healthRouter);
 
-app.listen(PORT, () => {
+app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`CIMScan API running at http://localhost:${PORT}`);
 });

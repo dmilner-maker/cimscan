@@ -1,163 +1,184 @@
 import { Router, Request, Response } from "express";
 import multer from "multer";
-import { simpleParser, ParsedMail } from "mailparser";
 import { supabase } from "../lib/supabase.js";
 import { anthropic } from "../lib/anthropic.js";
 
-const upload = multer();
+// Multer stores file uploads in memory
+const upload = multer({ storage: multer.memoryStorage() });
+
 export const ingestRouter = Router();
 
 /**
  * POST /api/email/ingest
  *
- * SendGrid Inbound Parse webhook (raw mode).
- * Receives the full MIME message in the "email" form field.
+ * Mailgun inbound route webhook.
+ * Receives multipart form data with parsed fields and attachments.
+ *
+ * Mailgun fields:
+ *   - sender: sender email address
+ *   - recipient: the TO address
+ *   - subject: email subject
+ *   - body-plain: plain text body
+ *   - attachment-1, attachment-2, etc: file uploads
  *
  * Flow:
- *   1. Parse MIME → extract TO address, sender, PDF attachment
+ *   1. Extract recipient (TO), sender, PDF attachment
  *   2. Match TO address → firms.ingest_address
  *   3. Upload CIM PDF to Supabase Storage
- *   4. Create deal (stage 0 = received)
- *   5. Create run (stage 0 = received)
- *   6. Return 200 immediately
- *   7. Async: send PDF to Anthropic, store result, update run
+ *   4. Create deal + run
+ *   5. Return 200 immediately
+ *   6. Async: send PDF to Anthropic, store result
  *
  * Stages: 0 = received, 1 = processing, 2 = complete
  */
-ingestRouter.post("/", upload.none(), async (req: Request, res: Response) => {
-  const rawEmail: string | undefined = req.body?.email;
+ingestRouter.post(
+  "/",
+  upload.any(),
+  async (req: Request, res: Response) => {
+    console.log("[ingest] Received webhook from Mailgun");
 
-  if (!rawEmail) {
-    console.error("[ingest] No 'email' field in payload");
-    res.status(400).json({ error: "Missing email field" });
-    return;
-  }
+    // --- Extract fields ---
+    const recipient: string | undefined =
+      req.body?.recipient?.toLowerCase();
+    const sender: string | undefined =
+      req.body?.sender?.toLowerCase() ?? req.body?.from?.toLowerCase();
+    const subject: string | undefined = req.body?.subject;
 
-  let parsed: ParsedMail;
-  try {
-    parsed = await simpleParser(rawEmail);
-  } catch (err) {
-    console.error("[ingest] MIME parse failed:", err);
-    res.status(400).json({ error: "Failed to parse email" });
-    return;
-  }
+    console.log(
+      `[ingest] From: ${sender}, To: ${recipient}, Subject: ${subject}`
+    );
 
-  // --- Extract TO address (the firm's ingest address) ---
-  const toAddress =
-    parsed.to &&
-    !Array.isArray(parsed.to) &&
-    parsed.to.value?.[0]?.address?.toLowerCase();
+    if (!recipient) {
+      console.error("[ingest] No recipient in payload");
+      res.status(400).json({ error: "No recipient" });
+      return;
+    }
 
-  if (!toAddress) {
-    console.error("[ingest] Could not extract TO address");
-    res.status(400).json({ error: "No TO address" });
-    return;
-  }
+    if (!sender) {
+      console.error("[ingest] No sender in payload");
+      res.status(400).json({ error: "No sender" });
+      return;
+    }
 
-  // --- Extract sender ---
-  const senderAddress =
-    parsed.from?.value?.[0]?.address?.toLowerCase() ?? "unknown";
+    // --- Find PDF attachment ---
+    const files = req.files as Express.Multer.File[] | undefined;
+    const pdfFile = files?.find(
+      (f) =>
+        f.mimetype === "application/pdf" ||
+        f.originalname?.toLowerCase().endsWith(".pdf")
+    );
 
-  // --- Find PDF attachment ---
-  const pdfAttachment = parsed.attachments?.find(
-    (a) => a.contentType === "application/pdf"
-  );
+    if (!pdfFile) {
+      console.error(`[ingest] No PDF attachment from ${sender}`);
+      res.status(200).json({ warning: "No PDF attachment found" });
+      return;
+    }
 
-  if (!pdfAttachment) {
-    console.error(`[ingest] No PDF attachment from ${senderAddress}`);
-    res.status(400).json({ error: "No PDF attachment found" });
-    return;
-  }
+    console.log(
+      `[ingest] PDF found: ${pdfFile.originalname} (${pdfFile.size} bytes)`
+    );
 
-  // --- Match TO address to firm ---
-  const { data: firm } = await supabase
-    .from("firms")
-    .select("id, name")
-    .eq("ingest_address", toAddress)
-    .limit(1)
-    .maybeSingle();
+    // --- Match recipient to firm ---
+    const { data: firm } = await supabase
+      .from("firms")
+      .select("id, name")
+      .eq("ingest_address", recipient)
+      .limit(1)
+      .maybeSingle();
 
-  if (!firm) {
-    console.warn(`[ingest] No firm matched for ingest address: ${toAddress}`);
-    res.status(200).json({ warning: "No matching firm found", to: toAddress });
-    return;
-  }
+    if (!firm) {
+      console.warn(
+        `[ingest] No firm matched for ingest address: ${recipient}`
+      );
+      res
+        .status(200)
+        .json({ warning: "No matching firm found", to: recipient });
+      return;
+    }
 
-  // --- Upload CIM PDF to Supabase Storage ---
-  const timestamp = Date.now();
-  const safeFilename =
-    pdfAttachment.filename?.replace(/[^a-zA-Z0-9._-]/g, "_") ?? "cim.pdf";
-  const storagePath = `${firm.id}/${timestamp}_${safeFilename}`;
+    // --- Upload CIM PDF to Supabase Storage ---
+    const timestamp = Date.now();
+    const safeFilename =
+      pdfFile.originalname?.replace(/[^a-zA-Z0-9._-]/g, "_") ?? "cim.pdf";
+    const storagePath = `${firm.id}/${timestamp}_${safeFilename}`;
 
-  const { error: uploadError } = await supabase.storage
-    .from("cims")
-    .upload(storagePath, pdfAttachment.content, {
-      contentType: "application/pdf",
+    const { error: uploadError } = await supabase.storage
+      .from("cims")
+      .upload(storagePath, pdfFile.buffer, {
+        contentType: "application/pdf",
+      });
+
+    if (uploadError) {
+      console.error("[ingest] PDF upload failed:", uploadError);
+      res.status(500).json({ error: "Failed to upload PDF" });
+      return;
+    }
+
+    // --- Create deal ---
+    const dealName = subject ?? pdfFile.originalname ?? "Untitled CIM";
+
+    const { data: deal, error: dealError } = await supabase
+      .from("deals")
+      .insert({
+        firm_id: firm.id,
+        deal_name: dealName,
+        sender_email: sender,
+        cim_storage_path: storagePath,
+        status: "received",
+      })
+      .select("id")
+      .single();
+
+    if (dealError || !deal) {
+      console.error("[ingest] Failed to create deal:", dealError);
+      res.status(500).json({ error: "Failed to create deal" });
+      return;
+    }
+
+    // --- Create run ---
+    const { data: run, error: runError } = await supabase
+      .from("runs")
+      .insert({
+        deal_id: deal.id,
+        stage_reached: 0,
+        started_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single();
+
+    if (runError || !run) {
+      console.error("[ingest] Failed to create run:", runError);
+      res.status(500).json({ error: "Failed to create run" });
+      return;
+    }
+
+    console.log(
+      `[ingest] Deal ${deal.id} / Run ${run.id} for firm "${firm.name}" from ${sender}`
+    );
+
+    // --- Return 200 immediately, process async ---
+    res.status(200).json({
+      deal_id: deal.id,
+      run_id: run.id,
+      firm: firm.name,
+      filename: safeFilename,
     });
 
-  if (uploadError) {
-    console.error("[ingest] PDF upload failed:", uploadError);
-    res.status(500).json({ error: "Failed to upload PDF" });
-    return;
+    // Fire-and-forget: kick off EC-CIM pipeline
+    processAsync(
+      run.id,
+      deal.id,
+      firm.id,
+      pdfFile.buffer,
+      sender
+    ).catch((err) =>
+      console.error(
+        `[ingest] Async processing failed for run ${run.id}:`,
+        err
+      )
+    );
   }
-
-  // --- Create deal ---
-  const dealName =
-    parsed.subject ?? pdfAttachment.filename ?? "Untitled CIM";
-
-  const { data: deal, error: dealError } = await supabase
-    .from("deals")
-    .insert({
-      firm_id: firm.id,
-      deal_name: dealName,
-      sender_email: senderAddress,
-      cim_storage_path: storagePath,
-      status: "received",
-    })
-    .select("id")
-    .single();
-
-  if (dealError || !deal) {
-    console.error("[ingest] Failed to create deal:", dealError);
-    res.status(500).json({ error: "Failed to create deal" });
-    return;
-  }
-
-  // --- Create run ---
-  const { data: run, error: runError } = await supabase
-    .from("runs")
-    .insert({
-      deal_id: deal.id,
-      stage_reached: 0,
-      started_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
-
-  if (runError || !run) {
-    console.error("[ingest] Failed to create run:", runError);
-    res.status(500).json({ error: "Failed to create run" });
-    return;
-  }
-
-  console.log(
-    `[ingest] Deal ${deal.id} / Run ${run.id} for firm "${firm.name}" from ${senderAddress}`
-  );
-
-  // --- Return 200 immediately, process async ---
-  res.status(200).json({
-    deal_id: deal.id,
-    run_id: run.id,
-    firm: firm.name,
-    filename: safeFilename,
-  });
-
-  // Fire-and-forget: kick off EC-CIM pipeline
-  processAsync(run.id, deal.id, firm.id, pdfAttachment.content, senderAddress).catch(
-    (err) =>
-      console.error(`[ingest] Async processing failed for run ${run.id}:`, err)
-  );
-});
+);
 
 // ─── Async Pipeline ─────────────────────────────────────────────────────────
 

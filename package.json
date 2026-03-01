@@ -1,0 +1,13 @@
+{
+  "name": "cimscan",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CIMScan SaaS Monorepo",
+  "workspaces": ["web", "api"],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:web": "npm run dev -w web",
+    "dev:api": "npm run dev -w api",
+    "build": "npm run build --workspaces --if-present"
+  }
+}

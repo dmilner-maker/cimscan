@@ -1,6 +1,6 @@
 // api/src/lib/mailgun.ts
 
-import fetch from "node-fetch";
+
 
 interface SendEmailParams {
   to: string;

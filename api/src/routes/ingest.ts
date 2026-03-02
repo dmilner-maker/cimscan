@@ -1,10 +1,12 @@
 import { Router, Request, Response } from "express";
 import multer from "multer";
 import { supabase } from "../lib/supabase.js";
-import { anthropic } from "../lib/anthropic.js";
+import { sendEmail } from "../lib/mailgun.js";
 
 // Multer stores file uploads in memory
 const upload = multer({ storage: multer.memoryStorage() });
+
+const WEB_URL = process.env.WEB_URL ?? "https://web-production-4a3e0.up.railway.app";
 
 export const ingestRouter = Router();
 
@@ -14,22 +16,16 @@ export const ingestRouter = Router();
  * Mailgun inbound route webhook.
  * Receives multipart form data with parsed fields and attachments.
  *
- * Mailgun fields:
- *   - sender: sender email address
- *   - recipient: the TO address
- *   - subject: email subject
- *   - body-plain: plain text body
- *   - attachment-1, attachment-2, etc: file uploads
- *
  * Flow:
  *   1. Extract recipient (TO), sender, PDF attachment
  *   2. Match TO address → firms.ingest_address
  *   3. Upload CIM PDF to Supabase Storage
- *   4. Create deal + run
- *   5. Return 200 immediately
- *   6. Async: send PDF to Anthropic, store result
+ *   4. Create deal (status: received)
+ *   5. Send acknowledgment email with Configure Analysis link
+ *   6. Return 200
  *
- * Stages: 0 = received, 1 = processing, 2 = complete
+ * No pipeline is triggered on receipt. Pipeline runs after
+ * the user configures analysis depth, accepts terms, and pays.
  */
 ingestRouter.post(
   "/",
@@ -114,7 +110,7 @@ ingestRouter.post(
       return;
     }
 
-    // --- Create deal ---
+    // --- Create deal (no run — pipeline runs after config + payment) ---
     const dealName = subject ?? pdfFile.originalname ?? "Untitled CIM";
 
     const { data: deal, error: dealError } = await supabase
@@ -135,168 +131,134 @@ ingestRouter.post(
       return;
     }
 
-    // --- Create run ---
-    const { data: run, error: runError } = await supabase
-      .from("runs")
-      .insert({
-        deal_id: deal.id,
-        stage_reached: 0,
-        started_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single();
+    console.log(
+      `[ingest] Deal ${deal.id} created for firm "${firm.name}" from ${sender}`
+    );
 
-    if (runError || !run) {
-      console.error("[ingest] Failed to create run:", runError);
-      res.status(500).json({ error: "Failed to create run" });
-      return;
+    // --- Send acknowledgment email ---
+    const configureUrl = `${WEB_URL}/deals/${deal.id}/configure`;
+
+    try {
+      await sendEmail({
+        to: sender,
+        subject: `CIMScan: ${dealName} — Received`,
+        html: buildAcknowledgmentEmail({
+          dealName,
+          filename: safeFilename,
+          firmName: firm.name,
+          configureUrl,
+        }),
+      });
+      console.log(`[ingest] Acknowledgment email sent to ${sender}`);
+    } catch (emailErr) {
+      // Log but don't fail the request — deal is already created
+      console.error("[ingest] Failed to send acknowledgment email:", emailErr);
     }
 
-    console.log(
-      `[ingest] Deal ${deal.id} / Run ${run.id} for firm "${firm.name}" from ${sender}`
-    );
-
-    // --- Return 200 immediately, process async ---
+    // --- Return 200 ---
     res.status(200).json({
       deal_id: deal.id,
-      run_id: run.id,
       firm: firm.name,
       filename: safeFilename,
+      status: "received",
     });
-
-    // Fire-and-forget: kick off EC-CIM pipeline
-    processAsync(
-      run.id,
-      deal.id,
-      firm.id,
-      pdfFile.buffer,
-      sender
-    ).catch((err) =>
-      console.error(
-        `[ingest] Async processing failed for run ${run.id}:`,
-        err
-      )
-    );
   }
 );
 
-// ─── Async Pipeline ─────────────────────────────────────────────────────────
+// ─── Acknowledgment Email Template ──────────────────────────────────────────
 
-async function processAsync(
-  runId: string,
-  dealId: string,
-  firmId: string,
-  pdfBuffer: Buffer,
-  senderEmail: string
-): Promise<void> {
-  // Stage 1 = processing
-  await supabase
-    .from("runs")
-    .update({ stage_reached: 1 })
-    .eq("id", runId);
+function buildAcknowledgmentEmail(params: {
+  dealName: string;
+  filename: string;
+  firmName: string;
+  configureUrl: string;
+}): string {
+  const { dealName, filename, firmName, configureUrl } = params;
 
-  try {
-    const pdfBase64 = pdfBuffer.toString("base64");
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</head>
+<body style="margin:0; padding:0; background-color:#f4f4f5; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5; padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="560" cellpadding="0" cellspacing="0" style="background-color:#ffffff; border-radius:8px; overflow:hidden;">
 
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "document",
-              source: {
-                type: "base64",
-                media_type: "application/pdf",
-                data: pdfBase64,
-              },
-            },
-            {
-              type: "text",
-              text: `You are EC-CIM, an AI analyst that performs due diligence on Confidential Information Memorandums (CIMs). Analyze the attached CIM and return a structured JSON report with the following sections:
+          <!-- Header -->
+          <tr>
+            <td style="padding:32px 40px 24px 40px;">
+              <h1 style="margin:0 0 8px 0; font-size:20px; font-weight:600; color:#18181b;">
+                CIM Received
+              </h1>
+              <p style="margin:0; font-size:14px; color:#71717a;">
+                Your document is ready to configure for analysis.
+              </p>
+            </td>
+          </tr>
 
-{
-  "company_name": "string",
-  "industry": "string",
-  "summary": "Brief executive summary",
-  "financials": {
-    "revenue": "string or null",
-    "ebitda": "string or null",
-    "margins": "string or null",
-    "growth_rate": "string or null"
-  },
-  "strengths": ["array of key strengths"],
-  "risks": ["array of key risks and concerns"],
-  "questions": ["follow-up diligence questions an analyst should ask"]
-}
+          <!-- Detail Card -->
+          <tr>
+            <td style="padding:0 40px;">
+              <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#fafafa; border:1px solid #e4e4e7; border-radius:6px;">
+                <tr>
+                  <td style="padding:20px;">
+                    <table width="100%" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td style="padding:4px 0; font-size:13px; color:#71717a; width:100px;">Deal</td>
+                        <td style="padding:4px 0; font-size:13px; color:#18181b; font-weight:500;">${dealName}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:4px 0; font-size:13px; color:#71717a;">File</td>
+                        <td style="padding:4px 0; font-size:13px; color:#18181b; font-weight:500;">${filename}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:4px 0; font-size:13px; color:#71717a;">Firm</td>
+                        <td style="padding:4px 0; font-size:13px; color:#18181b; font-weight:500;">${firmName}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:4px 0; font-size:13px; color:#71717a;">Status</td>
+                        <td style="padding:4px 0; font-size:13px; color:#18181b; font-weight:500;">Received — Awaiting Configuration</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
 
-Return ONLY valid JSON. No markdown, no commentary.`,
-            },
-          ],
-        },
-      ],
-    });
+          <!-- CTA Button -->
+          <tr>
+            <td style="padding:28px 40px;">
+              <table cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="background-color:#18181b; border-radius:6px;">
+                    <a href="${configureUrl}"
+                       style="display:inline-block; padding:12px 28px; font-size:14px; font-weight:600; color:#ffffff; text-decoration:none;">
+                      Configure Analysis
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
 
-    // Extract text response
-    const textBlock = response.content.find((b) => b.type === "text");
-    const resultText = textBlock
-      ? (textBlock as { type: "text"; text: string }).text
-      : null;
+          <!-- Footer -->
+          <tr>
+            <td style="padding:20px 40px 32px 40px; border-top:1px solid #e4e4e7;">
+              <p style="margin:0; font-size:12px; color:#a1a1aa;">
+                CIMScan by True Bearing LLC · IC Sentry Product Group
+              </p>
+            </td>
+          </tr>
 
-    // Store output JSON in Supabase Storage
-    const outputPath = `${firmId}/${dealId}/run_${runId}.json`;
-
-    const { error: outputUploadError } = await supabase.storage
-      .from("outputs")
-      .upload(outputPath, resultText ?? "{}", {
-        contentType: "application/json",
-      });
-
-    if (outputUploadError) {
-      throw new Error(`Output upload failed: ${outputUploadError.message}`);
-    }
-
-    // Stage 2 = complete
-    await supabase
-      .from("runs")
-      .update({
-        stage_reached: 2,
-        output_storage_path: outputPath,
-        tokens_input: response.usage?.input_tokens ?? null,
-        tokens_output: response.usage?.output_tokens ?? null,
-        completed_at: new Date().toISOString(),
-      })
-      .eq("id", runId);
-
-    // Update deal status
-    await supabase
-      .from("deals")
-      .update({ status: "complete" })
-      .eq("id", dealId);
-
-    console.log(`[ingest] Run ${runId} complete → ${outputPath}`);
-
-    // TODO: Send result email back to senderEmail
-
-  } catch (err) {
-    console.error(`[ingest] Pipeline error for run ${runId}:`, err);
-
-    await supabase
-      .from("runs")
-      .update({
-        abort_code: "pipeline_error",
-        error_detail: {
-          message: err instanceof Error ? err.message : String(err),
-          timestamp: new Date().toISOString(),
-        },
-      })
-      .eq("id", runId);
-
-    await supabase
-      .from("deals")
-      .update({ status: "failed" })
-      .eq("id", dealId);
-  }
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`.trim();
 }

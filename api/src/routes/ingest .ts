@@ -138,6 +138,20 @@ ingestRouter.post(
     // --- Send acknowledgment email ---
     const configureUrl = `${WEB_URL}/deals/${deal.id}/configure`;
 
+    const now = new Date();
+    const receivedAt =
+      now.toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      }) +
+      ", " +
+      now.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+
     try {
       await sendEmail({
         to: sender,
@@ -147,6 +161,7 @@ ingestRouter.post(
           filename: safeFilename,
           firmName: firm.name,
           configureUrl,
+          receivedAt,
         }),
       });
       console.log(`[ingest] Acknowledgment email sent to ${sender}`);
@@ -172,8 +187,9 @@ function buildAcknowledgmentEmail(params: {
   filename: string;
   firmName: string;
   configureUrl: string;
+  receivedAt: string;
 }): string {
-  const { dealName, filename, firmName, configureUrl } = params;
+  const { dealName, filename, firmName, configureUrl, receivedAt } = params;
 
   return `
 <!DOCTYPE html>
@@ -222,6 +238,10 @@ function buildAcknowledgmentEmail(params: {
                       <tr>
                         <td style="padding:4px 0; font-size:13px; color:#71717a;">Status</td>
                         <td style="padding:4px 0; font-size:13px; color:#18181b; font-weight:500;">Received — Awaiting Configuration</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:4px 0; font-size:13px; color:#71717a;">Received</td>
+                        <td style="padding:4px 0; font-size:13px; color:#18181b; font-weight:500;">${receivedAt}</td>
                       </tr>
                     </table>
                   </td>

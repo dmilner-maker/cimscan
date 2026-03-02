@@ -250,7 +250,7 @@ function buildAcknowledgmentEmail(params: {
           <tr>
             <td style="padding:20px 40px 32px 40px; border-top:1px solid #e4e4e7;">
               <p style="margin:0; font-size:12px; color:#a1a1aa;">
-                CIMScan by True Bearing LLC · IC SentinelProduct Group
+                CIMScan by True Bearing LLC · IC Sentinel Product Group
               </p>
             </td>
           </tr>

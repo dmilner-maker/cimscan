@@ -1,0 +1,368 @@
+"use client";
+
+import { useEffect, useState, useRef, useCallback } from "react";
+import { useParams } from "next/navigation";
+
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL ??
+  "https://api-production-8be1.up.railway.app";
+
+interface DealInfo {
+  id: string;
+  deal_name: string;
+  sender_email: string;
+  filename: string;
+  status: string;
+  claim_depth: string | null;
+  terms_accepted_at: string | null;
+  firm_name: string;
+  created_at: string;
+}
+
+type ClaimDepth = "CORE" | "FULL";
+
+export default function ConfigurePage() {
+  const params = useParams();
+  const dealId = params.id as string;
+
+  const [deal, setDeal] = useState<DealInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [claimDepth, setClaimDepth] = useState<ClaimDepth>("CORE");
+  const [hasScrolledToBottom, setHasScrolledToBottom] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+
+  const termsRef = useRef<HTMLDivElement>(null);
+
+  // --- Fetch deal info ---
+  useEffect(() => {
+    async function fetchDeal() {
+      try {
+        const res = await fetch(`${API_URL}/api/deals/${dealId}`);
+        if (!res.ok) throw new Error("Deal not found");
+        const data = await res.json();
+        setDeal(data);
+
+        // If already configured, show that state
+        if (data.terms_accepted_at) {
+          setSubmitted(true);
+          setClaimDepth(data.claim_depth ?? "CORE");
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load deal");
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchDeal();
+  }, [dealId]);
+
+  // --- Scroll detection for terms ---
+  const handleTermsScroll = useCallback(() => {
+    const el = termsRef.current;
+    if (!el) return;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 10;
+    if (atBottom) setHasScrolledToBottom(true);
+  }, []);
+
+  // --- Submit configuration ---
+  async function handleSubmit() {
+    if (!termsAccepted || submitting) return;
+
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API_URL}/api/deals/${dealId}/configure`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          claim_depth: claimDepth,
+          terms_accepted: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.error ?? "Configuration failed");
+      }
+
+      setSubmitted(true);
+      // TODO: Once Stripe is wired in, redirect to Checkout or mount Stripe Elements here
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Configuration failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // --- Loading state ---
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-zinc-50 flex items-center justify-center">
+        <p className="text-sm text-zinc-500">Loading deal...</p>
+      </main>
+    );
+  }
+
+  // --- Error state ---
+  if (error && !deal) {
+    return (
+      <main className="min-h-screen bg-zinc-50 flex items-center justify-center">
+        <div className="bg-white rounded-lg border border-zinc-200 p-8 max-w-md text-center">
+          <h1 className="text-lg font-semibold text-zinc-900 mb-2">
+            Deal Not Found
+          </h1>
+          <p className="text-sm text-zinc-500">{error}</p>
+        </div>
+      </main>
+    );
+  }
+
+  // --- Already configured state ---
+  if (submitted) {
+    return (
+      <main className="min-h-screen bg-zinc-50 flex items-center justify-center p-6">
+        <div className="bg-white rounded-lg border border-zinc-200 p-8 max-w-md w-full text-center">
+          <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6 text-emerald-600" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            </svg>
+          </div>
+          <h1 className="text-lg font-semibold text-zinc-900 mb-2">
+            Analysis Configured
+          </h1>
+          <p className="text-sm text-zinc-500 mb-4">
+            <strong>{deal?.deal_name}</strong> has been configured for{" "}
+            <strong>{claimDepth}</strong> analysis.
+          </p>
+          <p className="text-sm text-zinc-400">
+            Payment integration coming soon. You&apos;ll receive a link to complete
+            payment and begin analysis.
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-zinc-50 py-12 px-6">
+      <div className="max-w-2xl mx-auto space-y-8">
+        {/* Header */}
+        <div>
+          <p className="text-sm font-medium text-zinc-400 tracking-wide uppercase mb-1">
+            CIMScan
+          </p>
+          <h1 className="text-2xl font-semibold text-zinc-900">
+            Configure Analysis
+          </h1>
+        </div>
+
+        {/* Deal Info Card */}
+        <div className="bg-white rounded-lg border border-zinc-200 p-6">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide mb-4">
+            Deal Details
+          </h2>
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+            <dt className="text-zinc-500">Deal</dt>
+            <dd className="text-zinc-900 font-medium">{deal?.deal_name}</dd>
+            <dt className="text-zinc-500">File</dt>
+            <dd className="text-zinc-900 font-medium">{deal?.filename}</dd>
+            <dt className="text-zinc-500">Firm</dt>
+            <dd className="text-zinc-900 font-medium">{deal?.firm_name}</dd>
+            <dt className="text-zinc-500">Submitted by</dt>
+            <dd className="text-zinc-900 font-medium">{deal?.sender_email}</dd>
+            <dt className="text-zinc-500">Status</dt>
+            <dd className="text-zinc-900 font-medium capitalize">{deal?.status}</dd>
+          </dl>
+        </div>
+
+        {/* Analysis Depth Selector */}
+        <div className="bg-white rounded-lg border border-zinc-200 p-6">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide mb-4">
+            Analysis Depth
+          </h2>
+          <div className="grid grid-cols-2 gap-4">
+            <button
+              type="button"
+              onClick={() => setClaimDepth("CORE")}
+              className={`text-left p-4 rounded-lg border-2 transition-colors ${
+                claimDepth === "CORE"
+                  ? "border-zinc-900 bg-zinc-50"
+                  : "border-zinc-200 hover:border-zinc-300"
+              }`}
+            >
+              <p className="text-sm font-semibold text-zinc-900">CORE</p>
+              <p className="text-xs text-zinc-500 mt-1">
+                20–30 IC-material claims. Full underwriting-surface coverage.
+                Standard diligence scope.
+              </p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setClaimDepth("FULL")}
+              className={`text-left p-4 rounded-lg border-2 transition-colors ${
+                claimDepth === "FULL"
+                  ? "border-zinc-900 bg-zinc-50"
+                  : "border-zinc-200 hover:border-zinc-300"
+              }`}
+            >
+              <p className="text-sm font-semibold text-zinc-900">FULL</p>
+              <p className="text-xs text-zinc-500 mt-1">
+                45–60 claims with expanded recall. Second-order operational and
+                diligence-relevant claims included.
+              </p>
+            </button>
+          </div>
+        </div>
+
+        {/* Terms of Use */}
+        <div className="bg-white rounded-lg border border-zinc-200 p-6">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide mb-4">
+            Terms of Use
+          </h2>
+          <div
+            ref={termsRef}
+            onScroll={handleTermsScroll}
+            className="h-64 overflow-y-auto border border-zinc-200 rounded-lg p-4 text-xs text-zinc-600 leading-relaxed bg-zinc-50"
+          >
+            <p className="font-semibold text-zinc-900 mb-3">
+              CIMScan Terms of Use — True Bearing LLC
+            </p>
+            <p className="mb-3">
+              By configuring and submitting a Confidential Information Memorandum
+              (&quot;CIM&quot;) for analysis through CIMScan, you agree to the following
+              terms and conditions.
+            </p>
+            <p className="font-semibold text-zinc-800 mb-2">
+              1. Nature of Outputs
+            </p>
+            <p className="mb-3">
+              CIMScan outputs are structured starting points for diligence
+              preparation, not investment advice, risk assessments, or transaction
+              recommendations. All claims, gate conditions, thresholds, and
+              workplan elements are AI-generated and require independent validation
+              by qualified professionals before use in any investment decision.
+            </p>
+            <p className="font-semibold text-zinc-800 mb-2">
+              2. No Replacement of Professional Judgment
+            </p>
+            <p className="mb-3">
+              CIMScan does not replace the judgment of your deal team, legal
+              counsel, or investment committee. Outputs are designed to support
+              diligence preparation, not to serve as the basis for investment
+              committee decisions without independent verification.
+            </p>
+            <p className="font-semibold text-zinc-800 mb-2">
+              3. No Warranty
+            </p>
+            <p className="mb-3">
+              True Bearing LLC makes no representation or warranty that CIMScan
+              outputs are complete, accurate, or sufficient for any specific
+              transaction or purpose. Outputs may contain errors, omissions, or
+              misinterpretations of the source CIM.
+            </p>
+            <p className="font-semibold text-zinc-800 mb-2">
+              4. Limitation of Liability
+            </p>
+            <p className="mb-3">
+              In no event shall True Bearing LLC, its officers, directors,
+              employees, or affiliates be liable for any direct, indirect,
+              incidental, special, consequential, or exemplary damages arising
+              from or related to the use of CIMScan outputs, including but not
+              limited to damages for loss of profits, goodwill, data, or other
+              intangible losses, even if True Bearing LLC has been advised of the
+              possibility of such damages.
+            </p>
+            <p className="font-semibold text-zinc-800 mb-2">
+              5. Confidentiality
+            </p>
+            <p className="mb-3">
+              CIM documents submitted to CIMScan are processed using third-party
+              AI infrastructure. While True Bearing LLC takes reasonable measures
+              to protect the confidentiality of submitted documents, you
+              acknowledge that transmission and processing of documents over the
+              internet and through third-party services carries inherent risk. You
+              represent that you have the necessary rights and authorizations to
+              submit the CIM for AI-powered analysis.
+            </p>
+            <p className="font-semibold text-zinc-800 mb-2">
+              6. Per-Deal Acceptance
+            </p>
+            <p className="mb-3">
+              These terms must be accepted for each CIM submission individually.
+              Acceptance for one deal does not constitute acceptance for any
+              subsequent deal.
+            </p>
+            <p className="font-semibold text-zinc-800 mb-2">
+              7. Payment and Refunds
+            </p>
+            <p className="mb-3">
+              Payment is authorized at the time of configuration. Your payment
+              method is charged only upon successful completion of the analysis
+              pipeline. If the pipeline is unable to produce a valid output, the
+              payment authorization is released and no charge is applied.
+            </p>
+            <p className="font-semibold text-zinc-800 mb-2">
+              8. Governing Law
+            </p>
+            <p className="mb-3">
+              These terms shall be governed by and construed in accordance with
+              the laws of the State of Delaware, without regard to its conflict of
+              laws provisions.
+            </p>
+            <p className="mt-4 text-zinc-400 text-center">
+              — End of Terms —
+            </p>
+          </div>
+
+          {!hasScrolledToBottom && (
+            <p className="text-xs text-zinc-400 mt-2 text-center">
+              Scroll to the bottom of the terms to enable acceptance.
+            </p>
+          )}
+
+          <label
+            className={`flex items-start gap-3 mt-4 ${
+              !hasScrolledToBottom ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={termsAccepted}
+              disabled={!hasScrolledToBottom}
+              onChange={(e) => setTermsAccepted(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900 disabled:opacity-50"
+            />
+            <span className="text-sm text-zinc-700">
+              I have read and accept the Terms of Use for this deal.
+            </span>
+          </label>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-sm text-red-700">{error}</p>
+          </div>
+        )}
+
+        {/* Submit */}
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={!termsAccepted || submitting}
+          className="w-full py-3 px-6 rounded-lg text-sm font-semibold text-white bg-zinc-900 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {submitting ? "Configuring..." : `Configure ${claimDepth} Analysis`}
+        </button>
+
+        {/* Footer */}
+        <p className="text-center text-xs text-zinc-400">
+          CIMScan by True Bearing LLC · IC Sentinel
+        </p>
+      </div>
+    </main>
+  );
+}

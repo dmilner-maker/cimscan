@@ -2,10 +2,21 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
+import { loadStripe } from "@stripe/stripe-js";
+import {
+  Elements,
+  CardElement,
+  useStripe,
+  useElements,
+} from "@stripe/react-stripe-js";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ??
   "https://api-production-8be1.up.railway.app";
+
+const stripePromise = loadStripe(
+  process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? ""
+);
 
 interface DealInfo {
   id: string;
@@ -17,13 +28,25 @@ interface DealInfo {
   terms_accepted_at: string | null;
   firm_name: string;
   created_at: string;
+  pricing: {
+    CORE: number;
+    FULL: number;
+  };
 }
 
 type ClaimDepth = "CORE" | "FULL";
 
-export default function ConfigurePage() {
+function formatCents(cents: number): string {
+  return `$${(cents / 100).toFixed(0)}`;
+}
+
+// ─── Inner form component (needs Stripe context) ───────────────────
+
+function ConfigureForm() {
   const params = useParams();
   const dealId = params.id as string;
+  const stripe = useStripe();
+  const elements = useElements();
 
   const [deal, setDeal] = useState<DealInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -34,6 +57,7 @@ export default function ConfigurePage() {
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [cardComplete, setCardComplete] = useState(false);
 
   const termsRef = useRef<HTMLDivElement>(null);
 
@@ -46,7 +70,6 @@ export default function ConfigurePage() {
         const data = await res.json();
         setDeal(data);
 
-        // If already configured, show that state
         if (data.terms_accepted_at) {
           setSubmitted(true);
           setClaimDepth(data.claim_depth ?? "CORE");
@@ -68,18 +91,37 @@ export default function ConfigurePage() {
     if (atBottom) setHasScrolledToBottom(true);
   }, []);
 
-  // --- Submit configuration ---
+  // --- Submit configuration + payment ---
   async function handleSubmit() {
-    if (!termsAccepted || submitting) return;
+    if (!termsAccepted || !cardComplete || submitting || !stripe || !elements)
+      return;
 
     setSubmitting(true);
+    setError(null);
+
     try {
+      // 1. Create PaymentMethod from card input
+      const cardElement = elements.getElement(CardElement);
+      if (!cardElement) throw new Error("Card element not found");
+
+      const { error: stripeError, paymentMethod } =
+        await stripe.createPaymentMethod({
+          type: "card",
+          card: cardElement,
+        });
+
+      if (stripeError) {
+        throw new Error(stripeError.message ?? "Card error");
+      }
+
+      // 2. Send to API — creates PaymentIntent with auth/capture
       const res = await fetch(`${API_URL}/api/deals/${dealId}/configure`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           claim_depth: claimDepth,
           terms_accepted: true,
+          payment_method_id: paymentMethod.id,
         }),
       });
 
@@ -89,7 +131,6 @@ export default function ConfigurePage() {
       }
 
       setSubmitted(true);
-      // TODO: Once Stripe is wired in, redirect to Checkout or mount Stripe Elements here
     } catch (err) {
       setError(err instanceof Error ? err.message : "Configuration failed");
     } finally {
@@ -120,26 +161,41 @@ export default function ConfigurePage() {
     );
   }
 
-  // --- Already configured state ---
+  // --- Already configured / payment authorized state ---
   if (submitted) {
     return (
       <main className="min-h-screen bg-zinc-50 flex items-center justify-center p-6">
         <div className="bg-white rounded-lg border border-zinc-200 p-8 max-w-md w-full text-center">
           <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg className="w-6 h-6 text-emerald-600" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            <svg
+              className="w-6 h-6 text-emerald-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="2"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4.5 12.75l6 6 9-13.5"
+              />
             </svg>
           </div>
           <h1 className="text-lg font-semibold text-zinc-900 mb-2">
-            Analysis Configured
+            Payment Authorized
           </h1>
           <p className="text-sm text-zinc-500 mb-4">
             <strong>{deal?.deal_name}</strong> has been configured for{" "}
             <strong>{claimDepth}</strong> analysis.
           </p>
           <p className="text-sm text-zinc-400">
-            Payment integration coming soon. You&apos;ll receive a link to complete
-            payment and begin analysis.
+            Your card has been authorized for{" "}
+            <strong>
+              {deal?.pricing
+                ? formatCents(deal.pricing[claimDepth])
+                : claimDepth}
+            </strong>
+            . You will only be charged if the analysis completes successfully.
           </p>
         </div>
       </main>
@@ -172,9 +228,13 @@ export default function ConfigurePage() {
             <dt className="text-zinc-500">Firm</dt>
             <dd className="text-zinc-900 font-medium">{deal?.firm_name}</dd>
             <dt className="text-zinc-500">Submitted by</dt>
-            <dd className="text-zinc-900 font-medium">{deal?.sender_email}</dd>
+            <dd className="text-zinc-900 font-medium">
+              {deal?.sender_email}
+            </dd>
             <dt className="text-zinc-500">Status</dt>
-            <dd className="text-zinc-900 font-medium capitalize">{deal?.status}</dd>
+            <dd className="text-zinc-900 font-medium capitalize">
+              {deal?.status}
+            </dd>
           </dl>
         </div>
 
@@ -193,7 +253,12 @@ export default function ConfigurePage() {
                   : "border-zinc-200 hover:border-zinc-300"
               }`}
             >
-              <p className="text-sm font-semibold text-zinc-900">CORE</p>
+              <div className="flex items-baseline justify-between mb-1">
+                <p className="text-sm font-semibold text-zinc-900">CORE</p>
+                <p className="text-sm font-semibold text-zinc-900">
+                  {deal?.pricing ? formatCents(deal.pricing.CORE) : "$249"}
+                </p>
+              </div>
               <p className="text-xs text-zinc-500 mt-1">
                 20–30 IC-material claims. Full underwriting-surface coverage.
                 Standard diligence scope.
@@ -208,7 +273,12 @@ export default function ConfigurePage() {
                   : "border-zinc-200 hover:border-zinc-300"
               }`}
             >
-              <p className="text-sm font-semibold text-zinc-900">FULL</p>
+              <div className="flex items-baseline justify-between mb-1">
+                <p className="text-sm font-semibold text-zinc-900">FULL</p>
+                <p className="text-sm font-semibold text-zinc-900">
+                  {deal?.pricing ? formatCents(deal.pricing.FULL) : "$399"}
+                </p>
+              </div>
               <p className="text-xs text-zinc-500 mt-1">
                 45–60 claims with expanded recall. Second-order operational and
                 diligence-relevant claims included.
@@ -232,8 +302,8 @@ export default function ConfigurePage() {
             </p>
             <p className="mb-3">
               By configuring and submitting a Confidential Information Memorandum
-              (&quot;CIM&quot;) for analysis through CIMScan, you agree to the following
-              terms and conditions.
+              (&quot;CIM&quot;) for analysis through CIMScan, you agree to the
+              following terms and conditions.
             </p>
             <p className="font-semibold text-zinc-800 mb-2">
               1. Nature of Outputs
@@ -242,8 +312,9 @@ export default function ConfigurePage() {
               CIMScan outputs are structured starting points for diligence
               preparation, not investment advice, risk assessments, or transaction
               recommendations. All claims, gate conditions, thresholds, and
-              workplan elements are AI-generated and require independent validation
-              by qualified professionals before use in any investment decision.
+              workplan elements are AI-generated and require independent
+              validation by qualified professionals before use in any investment
+              decision.
             </p>
             <p className="font-semibold text-zinc-800 mb-2">
               2. No Replacement of Professional Judgment
@@ -254,9 +325,7 @@ export default function ConfigurePage() {
               diligence preparation, not to serve as the basis for investment
               committee decisions without independent verification.
             </p>
-            <p className="font-semibold text-zinc-800 mb-2">
-              3. No Warranty
-            </p>
+            <p className="font-semibold text-zinc-800 mb-2">3. No Warranty</p>
             <p className="mb-3">
               True Bearing LLC makes no representation or warranty that CIMScan
               outputs are complete, accurate, or sufficient for any specific
@@ -283,9 +352,9 @@ export default function ConfigurePage() {
               AI infrastructure. While True Bearing LLC takes reasonable measures
               to protect the confidentiality of submitted documents, you
               acknowledge that transmission and processing of documents over the
-              internet and through third-party services carries inherent risk. You
-              represent that you have the necessary rights and authorizations to
-              submit the CIM for AI-powered analysis.
+              internet and through third-party services carries inherent risk.
+              You represent that you have the necessary rights and authorizations
+              to submit the CIM for AI-powered analysis.
             </p>
             <p className="font-semibold text-zinc-800 mb-2">
               6. Per-Deal Acceptance
@@ -309,8 +378,8 @@ export default function ConfigurePage() {
             </p>
             <p className="mb-3">
               These terms shall be governed by and construed in accordance with
-              the laws of the State of Delaware, without regard to its conflict of
-              laws provisions.
+              the laws of the State of Delaware, without regard to its conflict
+              of laws provisions.
             </p>
             <p className="mt-4 text-zinc-400 text-center">
               — End of Terms —
@@ -325,7 +394,9 @@ export default function ConfigurePage() {
 
           <label
             className={`flex items-start gap-3 mt-4 ${
-              !hasScrolledToBottom ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+              !hasScrolledToBottom
+                ? "opacity-50 cursor-not-allowed"
+                : "cursor-pointer"
             }`}
           >
             <input
@@ -341,6 +412,35 @@ export default function ConfigurePage() {
           </label>
         </div>
 
+        {/* Payment */}
+        <div className="bg-white rounded-lg border border-zinc-200 p-6">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide mb-4">
+            Payment
+          </h2>
+          <p className="text-sm text-zinc-500 mb-4">
+            Your card will be authorized for{" "}
+            <strong className="text-zinc-900">
+              {deal?.pricing ? formatCents(deal.pricing[claimDepth]) : "—"}
+            </strong>
+            . You are only charged if the analysis completes successfully.
+          </p>
+          <div className="border border-zinc-200 rounded-lg p-4 bg-zinc-50">
+            <CardElement
+              options={{
+                style: {
+                  base: {
+                    fontSize: "14px",
+                    color: "#18181b",
+                    "::placeholder": { color: "#a1a1aa" },
+                  },
+                  invalid: { color: "#dc2626" },
+                },
+              }}
+              onChange={(e) => setCardComplete(e.complete)}
+            />
+          </div>
+        </div>
+
         {/* Error */}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4">
@@ -352,10 +452,12 @@ export default function ConfigurePage() {
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={!termsAccepted || submitting}
+          disabled={!termsAccepted || !cardComplete || submitting || !stripe}
           className="w-full py-3 px-6 rounded-lg text-sm font-semibold text-white bg-zinc-900 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          {submitting ? "Configuring..." : `Configure ${claimDepth} Analysis`}
+          {submitting
+            ? "Authorizing payment..."
+            : `Authorize ${deal?.pricing ? formatCents(deal.pricing[claimDepth]) : ""} & Start ${claimDepth} Analysis`}
         </button>
 
         {/* Footer */}
@@ -364,5 +466,15 @@ export default function ConfigurePage() {
         </p>
       </div>
     </main>
+  );
+}
+
+// ─── Wrapper with Stripe Elements provider ─────────────────────────
+
+export default function ConfigurePage() {
+  return (
+    <Elements stripe={stripePromise}>
+      <ConfigureForm />
+    </Elements>
   );
 }

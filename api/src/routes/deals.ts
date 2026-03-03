@@ -1,5 +1,7 @@
 import { Router, Request, Response } from "express";
 import { supabase } from "../lib/supabase.js";
+import { createPaymentAuth } from "../services/payment.js";
+import { PRICING, ClaimDepth } from "../lib/stripe.js";
 
 export const dealsRouter = Router();
 
@@ -40,20 +42,24 @@ dealsRouter.get("/:id", async (req: Request, res: Response) => {
     terms_accepted_at: deal.terms_accepted_at,
     firm_name: firm?.name ?? "Unknown",
     created_at: deal.created_at,
+    pricing: {
+      CORE: PRICING.CORE.amount,
+      FULL: PRICING.FULL.amount,
+    },
   });
 });
 
 /**
  * POST /api/deals/:id/configure
  *
- * Accepts terms, sets claim depth.
- * Next step (not yet built): create Stripe PaymentIntent with capture_method: manual.
+ * Accepts terms, sets claim depth, authorizes payment via Stripe.
+ * Card is authorized but NOT charged until pipeline completes.
  *
- * Body: { claim_depth: "CORE" | "FULL", terms_accepted: true }
+ * Body: { claim_depth: "CORE" | "FULL", terms_accepted: true, payment_method_id: string }
  */
 dealsRouter.post("/:id/configure", async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { claim_depth, terms_accepted } = req.body;
+  const { claim_depth, terms_accepted, payment_method_id } = req.body;
 
   // --- Validate inputs ---
   if (!terms_accepted) {
@@ -66,10 +72,15 @@ dealsRouter.post("/:id/configure", async (req: Request, res: Response) => {
     return;
   }
 
+  if (!payment_method_id) {
+    res.status(400).json({ error: "payment_method_id is required" });
+    return;
+  }
+
   // --- Verify deal exists and hasn't already been configured ---
   const { data: deal, error: fetchError } = await supabase
     .from("deals")
-    .select("id, status, terms_accepted_at")
+    .select("id, status, terms_accepted_at, sender_email, firm_id")
     .eq("id", id)
     .single();
 
@@ -88,31 +99,65 @@ dealsRouter.post("/:id/configure", async (req: Request, res: Response) => {
     return;
   }
 
-  // --- Update deal ---
-  const { error: updateError } = await supabase
+  // --- Accept terms first ---
+  const { error: termsError } = await supabase
     .from("deals")
     .update({
-      claim_depth,
       terms_accepted_at: new Date().toISOString(),
-      status: "configured",
     })
     .eq("id", id);
 
-  if (updateError) {
-    console.error("[deals] Failed to update deal:", updateError);
+  if (termsError) {
+    console.error("[deals] Failed to accept terms:", termsError);
     res.status(500).json({ error: "Failed to configure deal" });
     return;
   }
 
-  console.log(`[deals] Deal ${id} configured: ${claim_depth}, terms accepted`);
+  // --- Look up firm for Stripe customer ID ---
+  const { data: firm } = await supabase
+    .from("firms")
+    .select("stripe_customer_id")
+    .eq("id", deal.firm_id)
+    .single();
 
-  // TODO: Create Stripe PaymentIntent with capture_method: 'manual'
-  // TODO: Return client_secret to frontend for Stripe Elements / redirect to Checkout
+  // --- Create PaymentIntent (auth only, no capture) ---
+  try {
+    const { paymentIntent, clientSecret } = await createPaymentAuth(
+      id,
+      claim_depth as ClaimDepth,
+      deal.sender_email,
+      deal.firm_id,
+      firm?.stripe_customer_id ?? null,
+      payment_method_id
+    );
 
-  res.json({
-    deal_id: id,
-    claim_depth,
-    status: "configured",
-    // stripe_client_secret will go here once Stripe is wired in
-  });
+    console.log(`[deals] Deal ${id} configured: ${claim_depth}, payment authorized (${paymentIntent.id})`);
+
+    res.json({
+      deal_id: id,
+      claim_depth,
+      status: "payment_authorized",
+      amount: PRICING[claim_depth as ClaimDepth].amount,
+      stripe_client_secret: clientSecret,
+    });
+  } catch (err: any) {
+    console.error("[deals] Stripe error:", err);
+
+    // Roll back terms acceptance on payment failure
+    await supabase
+      .from("deals")
+      .update({ terms_accepted_at: null })
+      .eq("id", id);
+
+    if (err.type === "StripeCardError") {
+      res.status(402).json({
+        error: "Card declined",
+        decline_code: err.decline_code,
+        message: err.message,
+      });
+      return;
+    }
+
+    res.status(500).json({ error: "Payment processing failed" });
+  }
 });

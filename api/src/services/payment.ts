@@ -43,6 +43,10 @@ export async function createPaymentAuth(
     payment_method: paymentMethodId,
     capture_method: "manual",
     confirm: true,
+    automatic_payment_methods: {
+      enabled: true,
+      allow_redirects: "never",
+    },
     description: pricing.label,
     metadata: {
       deal_id: dealId,

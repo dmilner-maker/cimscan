@@ -4,14 +4,14 @@
  * Handles:
  *   1. Upload Dataset D, IC Insights, and Synopsis to Supabase Storage
  *   2. Generate signed download URLs (7-day expiry)
- *   3. Send completion email via Resend with inline synopsis + download links
+ *   3. Send completion email via Mailgun with inline synopsis + download links
  *
  * Storage structure: outputs/{deal_id}/{filename}
  * Signed URLs are not guessable and expire after 7 days.
  */
 
 import { supabase } from "../lib/supabase.js";
-import { Resend } from "resend";
+import { sendEmail } from "../lib/mailgun.js";
 import { PipelineOutputs } from "./outputBuilder.js";
 
 // ---------------------------------------------------------------------------
@@ -19,9 +19,6 @@ import { PipelineOutputs } from "./outputBuilder.js";
 // ---------------------------------------------------------------------------
 
 const SIGNED_URL_EXPIRY_SECONDS = 7 * 24 * 60 * 60; // 7 days
-const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "CIMScan <noreply@cimscan.ai>";
-
-const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,16 +143,11 @@ async function sendDeliveryEmail(
 
   const htmlBody = buildDeliveryHtml(deal, inlineSynopsis, urls);
 
-  const { error } = await resend.emails.send({
-    from: FROM_EMAIL,
+  await sendEmail({
     to: deal.sender_email,
     subject: `CIMScan — Analysis Complete: ${deal.deal_name}`,
     html: htmlBody,
   });
-
-  if (error) {
-    throw new Error(`Failed to send delivery email: ${JSON.stringify(error)}`);
-  }
 
   console.log(`[delivery] Email sent to ${deal.sender_email} for deal ${deal.id}`);
 }

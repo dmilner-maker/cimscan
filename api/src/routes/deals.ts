@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase.js";
 import { createPaymentAuth } from "../services/payment.js";
 import { validatePromoCode, redeemPromoCode } from "../services/promo.js";
 import { PRICING, ClaimDepth } from "../lib/stripe.js";
+import { triggerPipeline } from "../services/pipeline.js";
 
 export const dealsRouter = Router();
 
@@ -123,6 +124,10 @@ dealsRouter.post("/:id/configure", async (req: Request, res: Response) => {
       await redeemPromoCode(validation.promoCode.id, id);
 
       console.log(`[deals] Deal ${id} configured via promo code ${promo_code}: ${claim_depth}, $0`);
+
+      // Fire-and-forget: pipeline runs async, handles its own errors,
+      // retry logic, and output delivery. No payment to resolve for promo deals.
+      triggerPipeline(id);
 
       res.json({
         deal_id: id,

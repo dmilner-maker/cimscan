@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { stripe } from "../lib/stripe.js";
 import { supabase } from "../lib/supabase.js";
+import { triggerPipeline } from "../services/pipeline.js";
 
 export const stripeWebhookRouter = Router();
 
@@ -54,19 +55,9 @@ stripeWebhookRouter.post("/", async (req: Request, res: Response) => {
           .update({ status: "pipeline_queued" })
           .eq("id", dealId);
 
-        // -- TRIGGER PIPELINE HERE --
-        //
-        // The pipeline runner should:
-        //   1. Run the EC-CIM two-pass pipeline
-        //   2. On abort, check shouldRetry(abortCode) from services/payment.ts
-        //   3. If shouldRetry returns true, retry once
-        //   4. Call resolvePayment(dealId, result) with the final outcome
-        //
-        // Example with Inngest:
-        //   await inngest.send({ name: "cimscan/pipeline.start", data: { dealId, claimDepth } });
-        //
-        // Example direct call:
-        //   await runPipeline(dealId, claimDepth);
+        // Fire-and-forget: pipeline runs async, handles its own errors,
+        // retry logic, payment resolution, and output delivery.
+        triggerPipeline(dealId);
 
         break;
       }

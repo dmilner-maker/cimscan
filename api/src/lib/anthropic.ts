@@ -1,9 +1,12 @@
 /**
  * Anthropic API Client for EC-CIM Pipeline
  *
- * Handles two-pass architecture:
- *   Pass 1: CIM PDF + system prompt → Quality Gate + Stage 1 (claim register)
- *   Pass 2: Stage 1 JSON + system prompt → Stages 2–5 + IC Insights
+ * Handles multi-pass architecture:
+ *   Pass 1: CIM PDF + system prompt -> Quality Gate + Stage 1 (claim register)
+ *   Stage 2: Claim register -> Underwriting Gates
+ *   Stage 3: Claim register + Gates -> Workstream Execution
+ *   Stage 4: All previous -> Interdependency Analysis
+ *   Stage 5 + Insights: All previous -> Thesis Pillars + IC Insights
  *
  * Uses the Messages API with document (PDF) support.
  */
@@ -16,15 +19,15 @@ import { fileURLToPath } from "node:url";
 // Config
 // ---------------------------------------------------------------------------
 
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_API_VERSION = "2023-06-01";
+var ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+var ANTHROPIC_API_VERSION = "2023-06-01";
 
-// Model for pipeline execution — Sonnet for cost/speed balance on structured output
-const PIPELINE_MODEL = "claude-sonnet-4-20250514";
+// Model for pipeline execution
+var PIPELINE_MODEL = "claude-sonnet-4-20250514";
 
-// Max tokens — pipeline JSON outputs can be large (especially FULL depth Stage 4)
-const PASS_1_MAX_TOKENS = 16_000; // Quality Gate + up to 60 claims
-const PASS_2_MAX_TOKENS = 32_000; // Stages 2–5 + IC Insights content
+// Max tokens per call
+var PASS_1_MAX_TOKENS = 16000;
+var STAGE_MAX_TOKENS = 16000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,27 +61,22 @@ export interface PipelinePassResult {
 // System prompt loader
 // ---------------------------------------------------------------------------
 
-let cachedSystemPrompt: string | null = null;
+var cachedSystemPrompt: string | null = null;
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+var __filename2 = fileURLToPath(import.meta.url);
+var __dirname2 = path.dirname(__filename2);
 
-/**
- * Load the EC-CIM API Payload system prompt.
- * Path is configurable via EC_CIM_SYSTEM_PROMPT_PATH env var.
- * Falls back to a bundled copy in the API's assets directory.
- */
 export function loadSystemPrompt(): string {
   if (cachedSystemPrompt) return cachedSystemPrompt;
 
-  const promptPath =
+  var promptPath =
     process.env.EC_CIM_SYSTEM_PROMPT_PATH ||
-    path.resolve(__dirname, "../../assets/ec-cim-system-prompt-v1.7.0.md");
+    path.resolve(__dirname2, "../../assets/ec-cim-system-prompt-v1.7.0.md");
 
   if (!fs.existsSync(promptPath)) {
     throw new Error(
-      `EC-CIM system prompt not found at ${promptPath}. ` +
-        `Set EC_CIM_SYSTEM_PROMPT_PATH or place the file in api/assets/.`
+      "EC-CIM system prompt not found at " + promptPath + ". " +
+        "Set EC_CIM_SYSTEM_PROMPT_PATH or place the file in api/assets/."
     );
   }
 
@@ -95,12 +93,12 @@ async function callAnthropic(
   userContent: unknown[],
   maxTokens: number
 ): Promise<AnthropicResponse> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  var apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error("ANTHROPIC_API_KEY environment variable is not set");
   }
 
-  const body = {
+  var body = {
     model: PIPELINE_MODEL,
     max_tokens: maxTokens,
     system: systemPrompt,
@@ -112,7 +110,7 @@ async function callAnthropic(
     ],
   };
 
-  const response = await fetch(ANTHROPIC_API_URL, {
+  var response = await fetch(ANTHROPIC_API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -123,9 +121,9 @@ async function callAnthropic(
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
+    var errorText = await response.text();
     throw new Error(
-      `Anthropic API error ${response.status}: ${errorText}`
+      "Anthropic API error " + response.status + ": " + errorText
     );
   }
 
@@ -133,30 +131,20 @@ async function callAnthropic(
 }
 
 // ---------------------------------------------------------------------------
-// Pass 1: CIM PDF → Quality Gate + Stage 1
+// Pass 1: CIM PDF -> Quality Gate + Stage 1
 // ---------------------------------------------------------------------------
 
-/**
- * Execute Pass 1 of the EC-CIM pipeline.
- *
- * Sends the CIM PDF (base64) with the system prompt and a Stage 1 run command.
- * Returns the Quality Gate report + claim register as JSON.
- *
- * @param pdfBuffer - Raw PDF file contents
- * @param claimDepth - "CORE" or "FULL"
- * @param sourceFilename - Original CIM filename (for the run command)
- */
 export async function executePass1(
   pdfBuffer: Buffer,
   claimDepth: "CORE" | "FULL",
   sourceFilename: string
 ): Promise<PipelinePassResult> {
-  const systemPrompt = loadSystemPrompt();
-  const pdfBase64 = pdfBuffer.toString("base64");
+  var systemPrompt = loadSystemPrompt();
+  var pdfBase64 = pdfBuffer.toString("base64");
 
-  const runCommand = `RUN: CIMScan — CLAIM_DEPTH: ${claimDepth} — PACKAGING: JSON`;
+  var runCommand = "RUN: CIMScan — CLAIM_DEPTH: " + claimDepth + " — PACKAGING: JSON";
 
-  const userContent = [
+  var userContent = [
     {
       type: "document",
       source: {
@@ -167,11 +155,11 @@ export async function executePass1(
     },
     {
       type: "text",
-      text: `Source CIM: ${sourceFilename}\n\n${runCommand}`,
+      text: "Source CIM: " + sourceFilename + "\n\n" + runCommand,
     },
   ];
 
-  const response = await callAnthropic(
+  var response = await callAnthropic(
     systemPrompt,
     userContent,
     PASS_1_MAX_TOKENS
@@ -181,42 +169,44 @@ export async function executePass1(
 }
 
 // ---------------------------------------------------------------------------
-// Pass 2: Stage 1 JSON → Stages 2–5 + IC Insights
+// Sequential stage execution: one stage per API call
 // ---------------------------------------------------------------------------
 
 /**
- * Execute Pass 2 of the EC-CIM pipeline.
+ * Execute a single stage (or group of stages) of the EC-CIM pipeline.
  *
- * Sends the Stage 1 claim register JSON (no CIM PDF needed) with the system
- * prompt and a pipeline run command for Stages 2–5 + IC Insights.
+ * Sends accumulated context from previous stages plus a run command
+ * for the specific stage(s) requested.
  *
- * @param stage1Json - The full Stage 1 JSON output from Pass 1
- * @param claimDepth - "CORE" or "FULL" (must match Pass 1)
+ * @param contextJson - All previous pipeline output (Pass 1 + any completed stages)
+ * @param stages - Stage string, e.g. "2" or "3" or "4" or "5,INSIGHTS"
+ * @param claimDepth - "CORE" or "FULL"
  */
-export async function executePass2(
-  stage1Json: Record<string, unknown>,
+export async function executeStage(
+  contextJson: Record<string, unknown>,
+  stages: string,
   claimDepth: "CORE" | "FULL"
 ): Promise<PipelinePassResult> {
-  const systemPrompt = loadSystemPrompt();
+  var systemPrompt = loadSystemPrompt();
 
-  const runCommand =
-    `RUN: EC-CIM Pipeline — STAGES: 2,3,4,5,INSIGHTS — CLAIM_SET: ${claimDepth}` +
-    ` — MODE: IC GRADE — ARTIFACT_ROWS: ON — PACKAGING: JSON — ABORT_ON_FAIL: TRUE`;
+  var runCommand =
+    "RUN: EC-CIM Pipeline — STAGES: " + stages + " — CLAIM_SET: " + claimDepth +
+    " — MODE: IC GRADE — ARTIFACT_ROWS: ON — PACKAGING: JSON — ABORT_ON_FAIL: TRUE";
 
-  const userContent = [
+  var userContent = [
     {
       type: "text",
       text:
-        `Stage 1 Output (Claim Register):\n\n` +
-        `\`\`\`json\n${JSON.stringify(stage1Json, null, 2)}\n\`\`\`\n\n` +
+        "Previous Pipeline Output:\n\n" +
+        "```json\n" + JSON.stringify(contextJson, null, 2) + "\n```\n\n" +
         runCommand,
     },
   ];
 
-  const response = await callAnthropic(
+  var response = await callAnthropic(
     systemPrompt,
     userContent,
-    PASS_2_MAX_TOKENS
+    STAGE_MAX_TOKENS
   );
 
   return parseResponse(response);
@@ -227,64 +217,55 @@ export async function executePass2(
 // ---------------------------------------------------------------------------
 
 function parseResponse(response: AnthropicResponse): PipelinePassResult {
-  // Concatenate all text blocks
-  const rawText = response.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text || "")
+  var rawText = response.content
+    .filter(function(block) { return block.type === "text"; })
+    .map(function(block) { return block.text || ""; })
     .join("\n");
 
-  const truncated = response.stop_reason === "max_tokens";
+  var truncated = response.stop_reason === "max_tokens";
 
-  // Attempt to extract JSON from the response
-  let json: Record<string, unknown> | null = null;
+  var json: Record<string, unknown> | null = null;
   try {
     json = extractJson(rawText);
-  } catch {
-    // JSON extraction failed — caller will handle based on context
+  } catch (e) {
+    // JSON extraction failed — caller will handle
   }
 
   return {
-    rawText,
-    json,
+    rawText: rawText,
+    json: json,
     inputTokens: response.usage.input_tokens,
     outputTokens: response.usage.output_tokens,
     stopReason: response.stop_reason,
-    truncated,
+    truncated: truncated,
   };
 }
 
-/**
- * Extract JSON from a response that may contain markdown fences or preamble text.
- * Tries multiple strategies:
- *   1. Direct JSON.parse on the full text
- *   2. Extract from ```json ... ``` fences
- *   3. Find the first { ... } block
- */
 function extractJson(text: string): Record<string, unknown> {
   // Strategy 1: direct parse
   try {
     return JSON.parse(text.trim());
-  } catch {
+  } catch (e) {
     // continue
   }
 
   // Strategy 2: markdown JSON fence
-  const fenceMatch = text.match(/```json\s*\n?([\s\S]*?)\n?\s*```/);
+  var fenceMatch = text.match(/```json\s*\n?([\s\S]*?)\n?\s*```/);
   if (fenceMatch) {
     try {
       return JSON.parse(fenceMatch[1].trim());
-    } catch {
+    } catch (e) {
       // continue
     }
   }
 
   // Strategy 3: find outermost { } block
-  const firstBrace = text.indexOf("{");
-  const lastBrace = text.lastIndexOf("}");
+  var firstBrace = text.indexOf("{");
+  var lastBrace = text.lastIndexOf("}");
   if (firstBrace !== -1 && lastBrace > firstBrace) {
     try {
       return JSON.parse(text.substring(firstBrace, lastBrace + 1));
-    } catch {
+    } catch (e) {
       // continue
     }
   }

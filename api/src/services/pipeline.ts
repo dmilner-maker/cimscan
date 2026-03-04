@@ -77,8 +77,8 @@ export async function executePipeline(dealId: string): Promise<void> {
     return;
   }
 
-  // Guard: only run from pipeline_queued status
-  if (deal.status !== "pipeline_queued") {
+  // Guard: only run from expected statuses
+  if (deal.status !== "pipeline_queued" && deal.status !== "received") {
     console.warn(
       `[pipeline] Deal ${dealId} is in status '${deal.status}', expected 'pipeline_queued'. Skipping.`
     );
@@ -370,7 +370,6 @@ async function deliverQualityGateReport(
   deal: Deal,
   qualityGate: Record<string, unknown>
 ): Promise<void> {
-  // Build a minimal synopsis with just the quality gate result
   const synopsis = [
     `# CIMScan Quality Gate Report`,
     ``,
@@ -404,7 +403,6 @@ async function deliverQualityGateReport(
       `No charges have been applied.*`,
   ].join("\n");
 
-  // Upload synopsis as the sole output
   const storagePath = `outputs/${deal.id}/quality-gate-report.md`;
   const { error } = await supabase.storage
     .from("outputs")
@@ -417,7 +415,6 @@ async function deliverQualityGateReport(
     throw new Error(`Failed to upload quality gate report: ${error.message}`);
   }
 
-  // TODO: Send quality gate failure email with report link
   console.log(`[pipeline] Quality gate report uploaded for deal ${deal.id}`);
 }
 
@@ -498,7 +495,6 @@ async function downloadCim(storagePath: string): Promise<Buffer> {
     throw new Error(`CIM download failed: ${error?.message}`);
   }
 
-  // Convert Blob to Buffer
   const arrayBuffer = await data.arrayBuffer();
   return Buffer.from(arrayBuffer);
 }
@@ -507,14 +503,9 @@ async function downloadCim(storagePath: string): Promise<Buffer> {
 // JSON extraction helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Extract an abort signal from an EC-CIM JSON response.
- * EC-CIM outputs an "abort" field when the pipeline halts.
- */
 function extractAbort(
   data: Record<string, unknown>
 ): { code: string; reason: string } | null {
-  // Check top-level abort field
   const abort = data.abort as Record<string, unknown> | null | undefined;
   if (abort && typeof abort === "object") {
     const code =
@@ -529,7 +520,6 @@ function extractAbort(
     return { code, reason };
   }
 
-  // Check for error field pattern
   const error = data.error as Record<string, unknown> | string | undefined;
   if (error && typeof error === "object") {
     const code = (error.code as string) || "UNKNOWN_ABORT";
@@ -540,15 +530,10 @@ function extractAbort(
   return null;
 }
 
-/**
- * Extract a specific stage's data from the Pass 2 combined output.
- * Pass 2 may return data in various structures — handle flexibly.
- */
 function extractStage(
   data: Record<string, unknown>,
   stageNum: number
 ): Record<string, unknown> | undefined {
-  // Direct stage key: "stage_2", "stage2", etc.
   const keys = [`stage_${stageNum}`, `stage${stageNum}`];
   for (const key of keys) {
     if (data[key] && typeof data[key] === "object") {
@@ -556,7 +541,6 @@ function extractStage(
     }
   }
 
-  // Nested in a "stages" array
   if (Array.isArray(data.stages)) {
     const stage = (data.stages as Record<string, unknown>[]).find(
       (s) => s.stage === stageNum || s.stage_number === stageNum
@@ -564,8 +548,6 @@ function extractStage(
     if (stage) return stage;
   }
 
-  // The data might be flat (all stage outputs at top level)
-  // Return the full data and let the output builder pick what it needs
   if (stageNum === 2 && data.gates) return data as Record<string, unknown>;
   if (stageNum === 3 && data.tasks) return data as Record<string, unknown>;
   if (stageNum === 4 && data.matrix_pairs) return data as Record<string, unknown>;

@@ -16,11 +16,11 @@
  *   - Promo deals (payment_amount_cents = 0) → no payment action
  */
 
-import { supabase } from "../lib/supabase";
-import { executePass1, executePass2, PipelinePassResult } from "../lib/anthropic";
-import { resolvePayment, shouldRetry } from "./payment";
-import { buildOutputFiles, PipelineOutputs } from "./outputBuilder";
-import { uploadAndDeliver } from "./delivery";
+import { supabase } from "../lib/supabase.js";
+import { executePass1, executePass2, PipelinePassResult } from "../lib/anthropic.js";
+import { resolvePayment, shouldRetry } from "./payment.js";
+import { buildOutputFiles, PipelineOutputs } from "./outputBuilder.js";
+import { uploadAndDeliver } from "./delivery.js";
 
 // ---------------------------------------------------------------------------
 // Types

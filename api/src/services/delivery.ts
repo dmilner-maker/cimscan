@@ -10,9 +10,9 @@
  * Signed URLs are not guessable and expire after 7 days.
  */
 
-import { supabase } from "../lib/supabase";
+import { supabase } from "../lib/supabase.js";
 import { Resend } from "resend";
-import { PipelineOutputs } from "./outputBuilder";
+import { PipelineOutputs } from "./outputBuilder.js";
 
 // ---------------------------------------------------------------------------
 // Config

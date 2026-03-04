@@ -439,7 +439,7 @@ async function fetchDeal(dealId: string): Promise<Deal> {
     throw new Error(`Deal not found: ${dealId} — ${error?.message}`);
   }
 
-  return data as Deal;
+  return data as unknown as Deal;
 }
 
 async function updateDealStatus(dealId: string, status: string): Promise<void> {

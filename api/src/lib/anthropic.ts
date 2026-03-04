@@ -26,10 +26,10 @@ var ANTHROPIC_API_VERSION = "2023-06-01";
 var PIPELINE_MODEL = "claude-sonnet-4-20250514";
 
 // Per-stage token budgets
-var PASS_1_MAX_TOKENS = 16000;
+var PASS_1_MAX_TOKENS = 24000;
 var STAGE_2_MAX_TOKENS = 16000;
 var STAGE_3_MAX_TOKENS = 16000;
-var STAGE_4_MAX_TOKENS = 24000;  // Largest output: matrix + hubs + cascades + coupling + kill hubs
+var STAGE_4_MAX_TOKENS = 32000;  // Largest output: matrix + hubs + cascades + coupling + kill hubs
 var STAGE_5_MAX_TOKENS = 16000;
 
 // ---------------------------------------------------------------------------
@@ -159,7 +159,13 @@ export async function executePass1(
     },
     {
       type: "text",
-      text: "Source CIM: " + sourceFilename + "\n\n" + runCommand,
+      text: "Source CIM: " + sourceFilename + "\n\n" +
+        "IMPORTANT: Target the upper end of the CORE band (25-30 claims). " +
+        "Extract every IC-material claim the CIM supports. Do not stop at the 20-claim floor — " +
+        "push to 25+ claims by mining all underwriting surfaces thoroughly. " +
+        "Ensure each surface has multiple claims covering different angles. " +
+        "Include claim_text, source_excerpt, and all schema fields for every claim.\n\n" +
+        runCommand,
     },
   ];
 
@@ -251,11 +257,11 @@ export async function executeStage4(
         "Previous Pipeline Output (Stages 1-3):\n\n" +
         "```json\n" + JSON.stringify(contextJson, null, 2) + "\n```\n\n" +
         "IMPORTANT — Produce comprehensive interdependency analysis:\n" +
-        "- Evaluate ALL meaningful pairwise claim relationships (minimum 30 pairs for CORE, 80 for FULL). Include all pairs with relationship_strength >= 0.40.\n" +
-        "- Hub Risk Summary: include claim_text, economic_driver, blast_radius, linked_claims, and hub_classification_tag for EVERY claim with blast_radius >= 3.\n" +
-        "- Cascade Scenarios: model propagation chains for each hub.\n" +
+        "- Evaluate ALL meaningful pairwise claim relationships. For CORE, produce minimum 40 pairs. For FULL, minimum 80 pairs. Include every pair with relationship_strength >= 0.40. Score each dimension (kpi_shared, driver_shared, semantic, evidence_chain) to 2 decimal places.\n" +
+        "- Hub Risk Summary: include EVERY claim that has blast_radius >= 1 (not just >= 3). For each hub row include claim_id, claim_text, economic_driver, blast_radius, linked_claims, and hub_classification_tag. This should produce 15-25 rows for CORE.\n" +
+        "- Cascade Scenarios: model propagation chains for EVERY hub with blast_radius >= 3. Include hub_claim_text.\n" +
         "- Negative Coupling Detection (STRICT mode): emit only confirmed contradictions.\n" +
-        "- Top 5 IC Kill Hubs: rank by blast_radius + claim_priority_score. Include claim_text, linked_claims, and economic_driver.\n\n" +
+        "- Top 5 IC Kill Hubs: rank by blast_radius + claim_priority_score. Include claim_text, linked_claims, economic_driver, and ic_gating_rationale.\n\n" +
         runCommand,
     },
   ];

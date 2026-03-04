@@ -1,19 +1,25 @@
 /**
  * Pipeline Service — EC-CIM Sequential Stage Execution
  *
- * Runs the EC-CIM pipeline against a stored CIM PDF:
- *   1. Pass 1: CIM PDF -> Quality Gate + Stage 1 (claim register)
- *   2. Stage 2: Underwriting Gates
- *   3. Stage 3: Workstream Execution
- *   4. Stage 4: Interdependency Analysis (matrix, hubs, cascades, pillars links)
- *   5. Stage 5 + IC Insights: Thesis Pillars + IC Insights
+ * Each stage uses the specific run command from the EC-CIM prompt spec,
+ * matching how manual chat runs operate for maximum output quality.
  *
- * Each stage is a separate API call with accumulated context from prior stages.
- * This mirrors how EC-CIM works in chat and ensures every stage completes.
+ * Pass 1: CIM PDF -> Quality Gate + Stage 1 (claim register)
+ * Stage 2: Underwriting Gates (one per claim)
+ * Stage 3: Workstream Execution (tasks per claim)
+ * Stage 4: Interdependency Analysis (matrix, hubs, cascades, coupling, kill hubs)
+ * Stage 5: Thesis Pillars + Export Validation
  */
 
 import { supabase } from "../lib/supabase.js";
-import { executePass1, executeStage, PipelinePassResult } from "../lib/anthropic.js";
+import {
+  executePass1,
+  executeStage2,
+  executeStage3,
+  executeStage4,
+  executeStage5,
+  PipelinePassResult,
+} from "../lib/anthropic.js";
 import { resolvePayment, shouldRetry } from "./payment.js";
 import { buildOutputFiles, PipelineOutputs } from "./outputBuilder.js";
 import { uploadAndDeliver } from "./delivery.js";
@@ -76,7 +82,6 @@ export async function executePipeline(dealId: string): Promise<void> {
     "[pipeline] Starting pipeline for deal " + dealId + " (" + deal.deal_name + ") — " + deal.claim_depth + " depth"
   );
 
-  // --- First attempt ---
   var result = await runPipeline(deal);
 
   if (!result.success && result.abortCode) {
@@ -115,14 +120,14 @@ export function triggerPipeline(dealId: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline execution (single attempt) — sequential per-stage
+// Pipeline execution — sequential per-stage with specific run commands
 // ---------------------------------------------------------------------------
 
 async function runPipeline(deal: Deal): Promise<PipelineResult> {
   var totalInput = 0;
   var totalOutput = 0;
 
-  // ---- Download CIM PDF from Supabase Storage ----
+  // ---- Download CIM PDF ----
   var pdfBuffer: Buffer;
   try {
     pdfBuffer = await downloadCim(deal.cim_storage_path);
@@ -136,7 +141,7 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
 
   var sourceFilename = deal.cim_storage_path.split("/").pop() || "CIM.pdf";
 
-  // ==== PASS 1: CIM PDF -> Quality Gate + Stage 1 (Claim Register) ====
+  // ==== PASS 1: CIM PDF -> Quality Gate + Stage 1 ====
 
   var pass1: PipelinePassResult;
   try {
@@ -154,7 +159,6 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
   if (pass1.truncated) {
     return { success: false, abortCode: "PIPELINE_ERR_003", abortReason: "Pass 1 response truncated" };
   }
-
   if (!pass1.json) {
     return { success: false, abortCode: "PIPELINE_ERR_004", abortReason: "Pass 1 returned no parseable JSON" };
   }
@@ -162,7 +166,6 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
   var pass1Data = pass1.json as Record<string, unknown>;
   console.log("[pipeline] Pass 1 top-level keys: " + Object.keys(pass1Data).join(", "));
 
-  // Check for abort
   var pass1Abort = extractAbort(pass1Data);
   if (pass1Abort) {
     return {
@@ -173,7 +176,6 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
     };
   }
 
-  // Check Quality Gate
   var qualityGate = pass1Data.cim_quality_gate as Record<string, unknown> | undefined;
   var gateDecision = qualityGate?.gate_decision as string | undefined;
 
@@ -188,116 +190,168 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
 
   var claimCount = (pass1Data.claims as unknown[])?.length || 0;
   console.log(
-    "[pipeline] Pass 1 complete for deal " + deal.id + " — " +
-    claimCount + " claims, gate: " + gateDecision + ", tokens: " + pass1.inputTokens + "/" + pass1.outputTokens
+    "[pipeline] Pass 1 complete — " + claimCount + " claims, gate: " + gateDecision +
+    ", tokens: " + pass1.inputTokens + "/" + pass1.outputTokens
   );
 
-  // Build accumulated context — starts with Pass 1 output
-  var accumulatedContext: Record<string, unknown> = {
+  // ==== STAGE 2: Underwriting Gates ====
+
+  console.log("[pipeline] Running Stage 2 (Underwriting Gates)");
+  var stage2Result: PipelinePassResult;
+  try {
+    stage2Result = await executeStage2(pass1Data, deal.claim_depth);
+    totalInput += stage2Result.inputTokens;
+    totalOutput += stage2Result.outputTokens;
+  } catch (err) {
+    return {
+      success: false,
+      abortCode: "PIPELINE_ERR_005",
+      abortReason: "Stage 2 API call failed: " + (err instanceof Error ? err.message : String(err)),
+      qualityGate: qualityGate,
+      stage1: pass1Data,
+    };
+  }
+
+  if (stage2Result.truncated) {
+    return { success: false, abortCode: "PIPELINE_ERR_006", abortReason: "Stage 2 response truncated", qualityGate: qualityGate, stage1: pass1Data };
+  }
+  if (!stage2Result.json) {
+    return { success: false, abortCode: "PIPELINE_ERR_007", abortReason: "Stage 2 returned no parseable JSON", qualityGate: qualityGate, stage1: pass1Data };
+  }
+
+  var stage2Data = stage2Result.json as Record<string, unknown>;
+  var stage2Abort = extractAbort(stage2Data);
+  if (stage2Abort) {
+    return { success: false, abortCode: stage2Abort.code, abortReason: stage2Abort.reason, qualityGate: qualityGate, stage1: pass1Data };
+  }
+
+  console.log(
+    "[pipeline] Stage 2 complete — keys: " + Object.keys(stage2Data).join(", ") +
+    ", tokens: " + stage2Result.inputTokens + "/" + stage2Result.outputTokens
+  );
+
+  // Build accumulated context for Stage 3
+  var context2: Record<string, unknown> = {
     cim_quality_gate: pass1Data.cim_quality_gate,
-    stage: pass1Data.stage,
     claims: pass1Data.claims,
     self_audit: pass1Data.self_audit,
     claim_depth: pass1Data.claim_depth,
     ec_cim_version: pass1Data.ec_cim_version,
+    stage_2: stage2Data,
   };
-
-  // ==== STAGE 2: Underwriting Gates ====
-
-  console.log("[pipeline] Running Stage 2 (Underwriting Gates) for deal " + deal.id);
-  var stage2Result = await runStage(accumulatedContext, "2", deal.claim_depth);
-  totalInput += stage2Result.inputTokens;
-  totalOutput += stage2Result.outputTokens;
-
-  if (!stage2Result.success) {
-    return {
-      success: false,
-      abortCode: stage2Result.abortCode || "PIPELINE_ERR_005",
-      abortReason: "Stage 2 failed: " + (stage2Result.abortReason || "unknown"),
-      qualityGate: qualityGate,
-      stage1: pass1Data,
-    };
-  }
-
-  var stage2Data = stage2Result.data!;
-  console.log("[pipeline] Stage 2 complete — keys: " + Object.keys(stage2Data).join(", ") + ", tokens: " + stage2Result.inputTokens + "/" + stage2Result.outputTokens);
-
-  // Add Stage 2 to context
-  accumulatedContext.stage_2 = stage2Data;
 
   // ==== STAGE 3: Workstream Execution ====
 
-  console.log("[pipeline] Running Stage 3 (Workstream Execution) for deal " + deal.id);
-  var stage3Result = await runStage(accumulatedContext, "3", deal.claim_depth);
-  totalInput += stage3Result.inputTokens;
-  totalOutput += stage3Result.outputTokens;
-
-  if (!stage3Result.success) {
+  console.log("[pipeline] Running Stage 3 (Workstream Execution)");
+  var stage3Result: PipelinePassResult;
+  try {
+    stage3Result = await executeStage3(context2, deal.claim_depth);
+    totalInput += stage3Result.inputTokens;
+    totalOutput += stage3Result.outputTokens;
+  } catch (err) {
     return {
       success: false,
-      abortCode: stage3Result.abortCode || "PIPELINE_ERR_005",
-      abortReason: "Stage 3 failed: " + (stage3Result.abortReason || "unknown"),
-      qualityGate: qualityGate,
-      stage1: pass1Data,
-      stage2: stage2Data,
+      abortCode: "PIPELINE_ERR_005",
+      abortReason: "Stage 3 API call failed: " + (err instanceof Error ? err.message : String(err)),
+      qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data,
     };
   }
 
-  var stage3Data = stage3Result.data!;
-  console.log("[pipeline] Stage 3 complete — keys: " + Object.keys(stage3Data).join(", ") + ", tokens: " + stage3Result.inputTokens + "/" + stage3Result.outputTokens);
+  if (stage3Result.truncated) {
+    return { success: false, abortCode: "PIPELINE_ERR_006", abortReason: "Stage 3 response truncated", qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data };
+  }
+  if (!stage3Result.json) {
+    return { success: false, abortCode: "PIPELINE_ERR_007", abortReason: "Stage 3 returned no parseable JSON", qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data };
+  }
 
-  // Add Stage 3 to context
-  accumulatedContext.stage_3 = stage3Data;
+  var stage3Data = stage3Result.json as Record<string, unknown>;
+  var stage3Abort = extractAbort(stage3Data);
+  if (stage3Abort) {
+    return { success: false, abortCode: stage3Abort.code, abortReason: stage3Abort.reason, qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data };
+  }
+
+  console.log(
+    "[pipeline] Stage 3 complete — keys: " + Object.keys(stage3Data).join(", ") +
+    ", tokens: " + stage3Result.inputTokens + "/" + stage3Result.outputTokens
+  );
+
+  // Build accumulated context for Stage 4
+  var context3 = Object.assign({}, context2, { stage_3: stage3Data });
 
   // ==== STAGE 4: Interdependency Analysis ====
 
-  console.log("[pipeline] Running Stage 4 (Interdependency Analysis) for deal " + deal.id);
-  var stage4Result = await runStage(accumulatedContext, "4", deal.claim_depth);
-  totalInput += stage4Result.inputTokens;
-  totalOutput += stage4Result.outputTokens;
-
-  if (!stage4Result.success) {
+  console.log("[pipeline] Running Stage 4 (Interdependency Analysis)");
+  var stage4Result: PipelinePassResult;
+  try {
+    stage4Result = await executeStage4(context3, deal.claim_depth);
+    totalInput += stage4Result.inputTokens;
+    totalOutput += stage4Result.outputTokens;
+  } catch (err) {
     return {
       success: false,
-      abortCode: stage4Result.abortCode || "PIPELINE_ERR_005",
-      abortReason: "Stage 4 failed: " + (stage4Result.abortReason || "unknown"),
-      qualityGate: qualityGate,
-      stage1: pass1Data,
-      stage2: stage2Data,
-      stage3: stage3Data,
+      abortCode: "PIPELINE_ERR_005",
+      abortReason: "Stage 4 API call failed: " + (err instanceof Error ? err.message : String(err)),
+      qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data, stage3: stage3Data,
     };
   }
 
-  var stage4Data = stage4Result.data!;
-  console.log("[pipeline] Stage 4 complete — keys: " + Object.keys(stage4Data).join(", ") + ", tokens: " + stage4Result.inputTokens + "/" + stage4Result.outputTokens);
+  if (stage4Result.truncated) {
+    return { success: false, abortCode: "PIPELINE_ERR_006", abortReason: "Stage 4 response truncated", qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data, stage3: stage3Data };
+  }
+  if (!stage4Result.json) {
+    return { success: false, abortCode: "PIPELINE_ERR_007", abortReason: "Stage 4 returned no parseable JSON", qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data, stage3: stage3Data };
+  }
 
-  // Add Stage 4 to context
-  accumulatedContext.stage_4 = stage4Data;
+  var stage4Data = stage4Result.json as Record<string, unknown>;
+  var stage4Abort = extractAbort(stage4Data);
+  if (stage4Abort) {
+    return { success: false, abortCode: stage4Abort.code, abortReason: stage4Abort.reason, qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data, stage3: stage3Data };
+  }
 
-  // ==== STAGE 5 + IC INSIGHTS ====
+  console.log(
+    "[pipeline] Stage 4 complete — keys: " + Object.keys(stage4Data).join(", ") +
+    ", tokens: " + stage4Result.inputTokens + "/" + stage4Result.outputTokens
+  );
 
-  console.log("[pipeline] Running Stage 5 + IC Insights for deal " + deal.id);
-  var stage5Result = await runStage(accumulatedContext, "5,INSIGHTS", deal.claim_depth);
-  totalInput += stage5Result.inputTokens;
-  totalOutput += stage5Result.outputTokens;
+  // Build accumulated context for Stage 5
+  var context4 = Object.assign({}, context3, { stage_4: stage4Data });
 
-  if (!stage5Result.success) {
+  // ==== STAGE 5: Thesis Pillars + Export Validation ====
+
+  console.log("[pipeline] Running Stage 5 + IC Insights");
+  var stage5Result: PipelinePassResult;
+  try {
+    stage5Result = await executeStage5(context4, deal.claim_depth);
+    totalInput += stage5Result.inputTokens;
+    totalOutput += stage5Result.outputTokens;
+  } catch (err) {
     return {
       success: false,
-      abortCode: stage5Result.abortCode || "PIPELINE_ERR_005",
-      abortReason: "Stage 5 + Insights failed: " + (stage5Result.abortReason || "unknown"),
-      qualityGate: qualityGate,
-      stage1: pass1Data,
-      stage2: stage2Data,
-      stage3: stage3Data,
-      stage4: stage4Data,
+      abortCode: "PIPELINE_ERR_005",
+      abortReason: "Stage 5 API call failed: " + (err instanceof Error ? err.message : String(err)),
+      qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data, stage3: stage3Data, stage4: stage4Data,
     };
   }
 
-  var stage5Data = stage5Result.data!;
-  console.log("[pipeline] Stage 5 + Insights complete — keys: " + Object.keys(stage5Data).join(", ") + ", tokens: " + stage5Result.inputTokens + "/" + stage5Result.outputTokens);
+  if (stage5Result.truncated) {
+    return { success: false, abortCode: "PIPELINE_ERR_006", abortReason: "Stage 5 response truncated", qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data, stage3: stage3Data, stage4: stage4Data };
+  }
+  if (!stage5Result.json) {
+    return { success: false, abortCode: "PIPELINE_ERR_007", abortReason: "Stage 5 returned no parseable JSON", qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data, stage3: stage3Data, stage4: stage4Data };
+  }
 
-  // ---- Assemble full pipeline result ----
+  var stage5Data = stage5Result.json as Record<string, unknown>;
+  var stage5Abort = extractAbort(stage5Data);
+  if (stage5Abort) {
+    return { success: false, abortCode: stage5Abort.code, abortReason: stage5Abort.reason, qualityGate: qualityGate, stage1: pass1Data, stage2: stage2Data, stage3: stage3Data, stage4: stage4Data };
+  }
+
+  console.log(
+    "[pipeline] Stage 5 complete — keys: " + Object.keys(stage5Data).join(", ") +
+    ", tokens: " + stage5Result.inputTokens + "/" + stage5Result.outputTokens
+  );
+
+  // ---- Assemble result ----
   return {
     success: true,
     qualityGate: qualityGate,
@@ -309,79 +363,6 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
     icInsights: (stage5Data.ic_insights as Record<string, unknown>) || undefined,
     synopsis: (stage5Data.synopsis as string) || (stage5Data.workstream_synopsis as string) || undefined,
     tokenUsage: { totalInput: totalInput, totalOutput: totalOutput },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Single stage runner — wraps executeStage with error handling
-// ---------------------------------------------------------------------------
-
-interface StageResult {
-  success: boolean;
-  data?: Record<string, unknown>;
-  abortCode?: string;
-  abortReason?: string;
-  inputTokens: number;
-  outputTokens: number;
-}
-
-async function runStage(
-  context: Record<string, unknown>,
-  stages: string,
-  claimDepth: "CORE" | "FULL"
-): Promise<StageResult> {
-  var result: PipelinePassResult;
-  try {
-    result = await executeStage(context, stages, claimDepth);
-  } catch (err) {
-    return {
-      success: false,
-      abortCode: "PIPELINE_ERR_005",
-      abortReason: "API call failed for stage " + stages + ": " + (err instanceof Error ? err.message : String(err)),
-      inputTokens: 0,
-      outputTokens: 0,
-    };
-  }
-
-  if (result.truncated) {
-    return {
-      success: false,
-      abortCode: "PIPELINE_ERR_006",
-      abortReason: "Stage " + stages + " response truncated (max_tokens reached)",
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-    };
-  }
-
-  if (!result.json) {
-    return {
-      success: false,
-      abortCode: "PIPELINE_ERR_007",
-      abortReason: "Stage " + stages + " returned no parseable JSON",
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-    };
-  }
-
-  var data = result.json as Record<string, unknown>;
-
-  // Check for abort signal
-  var abort = extractAbort(data);
-  if (abort) {
-    return {
-      success: false,
-      abortCode: abort.code,
-      abortReason: abort.reason,
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-    };
-  }
-
-  return {
-    success: true,
-    data: data,
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
   };
 }
 
@@ -408,9 +389,7 @@ async function handleSuccess(deal: Deal, result: PipelineResult): Promise<void> 
   } catch (err) {
     console.error("[pipeline] Post-pipeline error for deal " + deal.id + ":", err);
     await updateDealStatus(deal.id, "aborted_not_charged");
-    await recordAbort(
-      deal.id,
-      "PIPELINE_ERR_010",
+    await recordAbort(deal.id, "PIPELINE_ERR_010",
       "Output delivery failed: " + (err instanceof Error ? err.message : String(err))
     );
     if (isStripeDeal(deal)) {
@@ -420,9 +399,7 @@ async function handleSuccess(deal: Deal, result: PipelineResult): Promise<void> 
 }
 
 async function handleFailure(deal: Deal, result: PipelineResult): Promise<void> {
-  console.log(
-    "[pipeline] Deal " + deal.id + " failed — " + result.abortCode + ": " + result.abortReason
-  );
+  console.log("[pipeline] Deal " + deal.id + " failed — " + result.abortCode + ": " + result.abortReason);
 
   await updateDealStatus(deal.id, "aborted_not_charged");
 
@@ -435,21 +412,15 @@ async function handleFailure(deal: Deal, result: PipelineResult): Promise<void> 
   }
 
   if (isStripeDeal(deal)) {
-    await resolvePayment(deal.id, {
-      success: false,
-      abortCode: result.abortCode,
-    });
+    await resolvePayment(deal.id, { success: false, abortCode: result.abortCode });
   }
 }
 
 // ---------------------------------------------------------------------------
-// Quality Gate failure — deliver report only
+// Quality Gate failure report
 // ---------------------------------------------------------------------------
 
-async function deliverQualityGateReport(
-  deal: Deal,
-  qualityGate: Record<string, unknown>
-): Promise<void> {
+async function deliverQualityGateReport(deal: Deal, qualityGate: Record<string, unknown>): Promise<void> {
   var lines = [
     "# CIMScan Quality Gate Report",
     "",
@@ -484,19 +455,13 @@ async function deliverQualityGateReport(
     lines.push("N/A");
   }
 
-  lines.push("");
-  lines.push("---");
-  lines.push("*This CIM did not meet the minimum data quality threshold. No charges applied.*");
+  lines.push("", "---", "*This CIM did not meet the minimum data quality threshold. No charges applied.*");
 
-  var synopsis = lines.join("\n");
   var storagePath = "outputs/" + deal.id + "/quality-gate-report.md";
-
-  var uploadResult = await supabase.storage
-    .from("outputs")
-    .upload(storagePath, Buffer.from(synopsis, "utf-8"), {
-      contentType: "text/markdown",
-      upsert: true,
-    });
+  var uploadResult = await supabase.storage.from("outputs").upload(
+    storagePath, Buffer.from(lines.join("\n"), "utf-8"),
+    { contentType: "text/markdown", upsert: true }
+  );
 
   if (uploadResult.error) {
     throw new Error("Failed to upload quality gate report: " + uploadResult.error.message);
@@ -510,56 +475,32 @@ async function deliverQualityGateReport(
 // ---------------------------------------------------------------------------
 
 async function fetchDeal(dealId: string): Promise<Deal> {
-  var result = await supabase
-    .from("deals")
-    .select(
-      "id, deal_name, sender_email, firm_id, cim_storage_path, status, " +
-      "claim_depth, stripe_payment_intent_id, payment_amount_cents"
-    )
-    .eq("id", dealId)
-    .single();
+  var result = await supabase.from("deals")
+    .select("id, deal_name, sender_email, firm_id, cim_storage_path, status, claim_depth, stripe_payment_intent_id, payment_amount_cents")
+    .eq("id", dealId).single();
 
   if (result.error || !result.data) {
     throw new Error("Deal not found: " + dealId + " — " + (result.error?.message || ""));
   }
-
   return result.data as unknown as Deal;
 }
 
 async function updateDealStatus(dealId: string, status: string): Promise<void> {
-  var result = await supabase
-    .from("deals")
-    .update({ status: status })
-    .eq("id", dealId);
-
+  var result = await supabase.from("deals").update({ status: status }).eq("id", dealId);
   if (result.error) {
     console.error("[pipeline] Failed to update deal " + dealId + " status to " + status + ":", result.error);
   }
 }
 
 async function recordAbort(dealId: string, abortCode: string, abortReason: string): Promise<void> {
-  var result = await supabase
-    .from("deals")
-    .update({
-      pipeline_abort_code: abortCode,
-      pipeline_abort_reason: abortReason,
-    })
-    .eq("id", dealId);
-
+  var result = await supabase.from("deals").update({ pipeline_abort_code: abortCode, pipeline_abort_reason: abortReason }).eq("id", dealId);
   if (result.error) {
     console.error("[pipeline] Failed to record abort for deal " + dealId + ":", result.error);
   }
 }
 
 async function clearAbort(dealId: string): Promise<void> {
-  var result = await supabase
-    .from("deals")
-    .update({
-      pipeline_abort_code: null,
-      pipeline_abort_reason: null,
-    })
-    .eq("id", dealId);
-
+  var result = await supabase.from("deals").update({ pipeline_abort_code: null, pipeline_abort_reason: null }).eq("id", dealId);
   if (result.error) {
     console.error("[pipeline] Failed to clear abort for deal " + dealId + ":", result.error);
   }
@@ -570,14 +511,10 @@ async function clearAbort(dealId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function downloadCim(storagePath: string): Promise<Buffer> {
-  var result = await supabase.storage
-    .from("cims")
-    .download(storagePath);
-
+  var result = await supabase.storage.from("cims").download(storagePath);
   if (result.error || !result.data) {
     throw new Error("CIM download failed: " + (result.error?.message || ""));
   }
-
   var arrayBuffer = await result.data.arrayBuffer();
   return Buffer.from(arrayBuffer);
 }
@@ -586,28 +523,21 @@ async function downloadCim(storagePath: string): Promise<Buffer> {
 // JSON extraction helpers
 // ---------------------------------------------------------------------------
 
-function extractAbort(
-  data: Record<string, unknown>
-): { code: string; reason: string } | null {
+function extractAbort(data: Record<string, unknown>): { code: string; reason: string } | null {
   var abort = data.abort as Record<string, unknown> | null | undefined;
   if (abort && typeof abort === "object") {
-    var code =
-      (abort.code as string) ||
-      (abort.error_code as string) ||
-      "UNKNOWN_ABORT";
-    var reason =
-      (abort.reason as string) ||
-      (abort.what_happened as string) ||
-      (abort.description as string) ||
-      "No reason provided";
-    return { code: code, reason: reason };
+    return {
+      code: (abort.code as string) || (abort.error_code as string) || "UNKNOWN_ABORT",
+      reason: (abort.reason as string) || (abort.what_happened as string) || (abort.description as string) || "No reason provided",
+    };
   }
 
   var errorObj = data.error as Record<string, unknown> | string | undefined;
   if (errorObj && typeof errorObj === "object") {
-    var errCode = (errorObj.code as string) || "UNKNOWN_ABORT";
-    var errReason = (errorObj.message as string) || (errorObj.reason as string) || "Error in pipeline";
-    return { code: errCode, reason: errReason };
+    return {
+      code: (errorObj.code as string) || "UNKNOWN_ABORT",
+      reason: (errorObj.message as string) || (errorObj.reason as string) || "Error in pipeline",
+    };
   }
 
   return null;

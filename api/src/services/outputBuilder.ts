@@ -6,8 +6,11 @@
  *   2. IC Insights (.docx) — 8-section Word document
  *   3. Workstream Synopsis (.md) — Markdown executive summary
  *
+ * DESIGN PRINCIPLE: Dynamic column extraction. Instead of hardcoding column
+ * names, we discover all keys from the first item in each array and use
+ * those as headers. This ensures we never drop data the model produces.
+ *
  * Dependencies: exceljs (xlsx), docx (docx generation)
- * Install: npm install exceljs docx
  */
 
 import ExcelJS from "exceljs";
@@ -17,12 +20,6 @@ import {
   Paragraph,
   TextRun,
   HeadingLevel,
-  Table,
-  TableRow,
-  TableCell,
-  WidthType,
-  BorderStyle,
-  AlignmentType,
 } from "docx";
 
 // ---------------------------------------------------------------------------
@@ -51,9 +48,9 @@ interface PipelineResult {
 }
 
 export interface PipelineOutputs {
-  datasetD: Buffer;   // .xlsx
-  icInsights: Buffer;  // .docx
-  synopsis: string;    // .md content
+  datasetD: Buffer;
+  icInsights: Buffer;
+  synopsis: string;
   datasetDFilename: string;
   icInsightsFilename: string;
   synopsisFilename: string;
@@ -67,22 +64,20 @@ export async function buildOutputFiles(
   deal: Deal,
   result: PipelineResult
 ): Promise<PipelineOutputs> {
-  const dealSlug = deal.deal_name.replace(/[^a-zA-Z0-9]/g, "_");
-  const timestamp = new Date().toISOString().slice(0, 10);
+  var dealSlug = deal.deal_name.replace(/[^a-zA-Z0-9]/g, "_");
+  var timestamp = new Date().toISOString().slice(0, 10);
 
-  const [datasetD, icInsights, synopsis] = await Promise.all([
-    buildDatasetD(deal, result),
-    buildIcInsights(deal, result),
-    buildSynopsis(deal, result),
-  ]);
+  var datasetD = await buildDatasetD(deal, result);
+  var icInsights = await buildIcInsights(deal, result);
+  var synopsis = await buildSynopsis(deal, result);
 
   return {
-    datasetD,
-    icInsights,
-    synopsis,
-    datasetDFilename: `Dataset_D_${dealSlug}_${timestamp}.xlsx`,
-    icInsightsFilename: `IC_Insights_${dealSlug}_${timestamp}.docx`,
-    synopsisFilename: `Synopsis_${dealSlug}_${timestamp}.md`,
+    datasetD: datasetD,
+    icInsights: icInsights,
+    synopsis: synopsis,
+    datasetDFilename: "Dataset_D_" + dealSlug + "_" + timestamp + ".xlsx",
+    icInsightsFilename: "IC_Insights_" + dealSlug + "_" + timestamp + ".docx",
+    synopsisFilename: "Synopsis_" + dealSlug + "_" + timestamp + ".md",
   };
 }
 
@@ -91,55 +86,126 @@ export async function buildOutputFiles(
 // ===========================================================================
 
 async function buildDatasetD(deal: Deal, result: PipelineResult): Promise<Buffer> {
-  const wb = new ExcelJS.Workbook();
+  var wb = new ExcelJS.Workbook();
 
   // --- Sheet 1: README ---
   buildReadmeSheet(wb, deal, result);
 
   // --- Sheet 2: Claim Register (Stage 1) ---
-  buildClaimRegisterSheet(wb, result.stage1);
+  buildDynamicArraySheet(wb, "Claim Register", getArray(result.stage1, "claims"));
 
   // --- Sheet 3: Self-Audit ---
   buildSelfAuditSheet(wb, result.stage1);
 
   // --- Sheet 4: Underwriting Gates (Stage 2) ---
-  buildUnderwritingGatesSheet(wb, result.stage2);
+  buildDynamicArraySheet(wb, "Underwriting Gates", getArray(result.stage2, "gates"));
 
   // --- Sheet 5: Workstream Execution (Stage 3) ---
-  buildWorkstreamSheet(wb, result.stage3);
+  var tasks = getArray(result.stage3, "tasks");
+  var artifactRows = getArray(result.stage3, "artifact_rows");
+  buildDynamicArraySheet(wb, "Workstream Execution", tasks.length > 0 ? tasks : artifactRows);
 
-  // --- Sheets 6–10: Interdependency Analysis (Stage 4) ---
-  buildInterdependencyMatrixSheet(wb, result.stage4);
-  buildHubRiskSheet(wb, result.stage4);
-  buildCascadeScenariosSheet(wb, result.stage4);
-  buildNegativeCouplingSheet(wb, result.stage4);
-  buildKillHubsSheet(wb, result.stage4);
+  // --- Sheet 6: Interdependency Matrix (Stage 4) ---
+  buildDynamicArraySheet(wb, "Interdependency Matrix", getArray(result.stage4, "matrix_pairs"));
+
+  // --- Sheet 7: Hub Risk Summary (Stage 4) ---
+  buildDynamicArraySheet(wb, "Hub Risk Summary", getArray(result.stage4, "hub_risk"));
+
+  // --- Sheet 8: Cascade Scenarios (Stage 4) ---
+  buildDynamicArraySheet(wb, "Cascade Scenarios", getArray(result.stage4, "cascade_scenarios"));
+
+  // --- Sheet 9: Negative Coupling (Stage 4) ---
+  var couplings = getArray(result.stage4, "negative_couplings");
+  buildNegativeCouplingSheet(wb, couplings, result.stage4);
+
+  // --- Sheet 10: Top 5 IC Kill Hubs (Stage 4) ---
+  buildDynamicArraySheet(wb, "Top 5 IC Kill Hubs", getArray(result.stage4, "top_5_kill_hubs"));
 
   // --- Sheet 11: Thesis Pillars (Stage 5) ---
-  buildThesisPillarsSheet(wb, result.stage5);
+  buildDynamicArraySheet(wb, "Thesis Pillars", getArray(result.stage5, "pillars"));
 
-  // --- Sheet 12: Export Validation Gate ---
+  // --- Sheet 12: Export Validation Gate (Stage 5) ---
   buildExportValidationSheet(wb, result.stage5);
 
-  // Write to buffer
-  const arrayBuffer = await wb.xlsx.writeBuffer();
+  var arrayBuffer = await wb.xlsx.writeBuffer();
   return Buffer.from(arrayBuffer);
 }
 
 // ---------------------------------------------------------------------------
-// Sheet builders
+// Dynamic array sheet builder — extracts ALL keys from array items
+// ---------------------------------------------------------------------------
+
+function buildDynamicArraySheet(
+  wb: ExcelJS.Workbook,
+  sheetName: string,
+  items: Record<string, unknown>[]
+): void {
+  var ws = wb.addWorksheet(sheetName);
+
+  if (items.length === 0) {
+    ws.addRow(["No data returned for this stage"]);
+    return;
+  }
+
+  // Discover all unique keys across all items (preserving order from first item)
+  var keySet = new Set<string>();
+  var orderedKeys: string[] = [];
+
+  for (var i = 0; i < items.length; i++) {
+    var itemKeys = Object.keys(items[i]);
+    for (var j = 0; j < itemKeys.length; j++) {
+      if (!keySet.has(itemKeys[j])) {
+        keySet.add(itemKeys[j]);
+        orderedKeys.push(itemKeys[j]);
+      }
+    }
+  }
+
+  // Add header row
+  ws.addRow(orderedKeys);
+  styleHeaderRow(ws);
+
+  // Add data rows
+  for (var i = 0; i < items.length; i++) {
+    var row: (string | number)[] = [];
+    for (var j = 0; j < orderedKeys.length; j++) {
+      var val = items[i][orderedKeys[j]];
+      if (val === null || val === undefined) {
+        row.push("");
+      } else if (Array.isArray(val)) {
+        row.push(val.join(", "));
+      } else if (typeof val === "object") {
+        row.push(JSON.stringify(val));
+      } else if (typeof val === "number") {
+        row.push(val);
+      } else {
+        row.push(String(val));
+      }
+    }
+    ws.addRow(row);
+  }
+
+  autoWidth(ws);
+}
+
+// ---------------------------------------------------------------------------
+// Individual sheet builders for non-array data
 // ---------------------------------------------------------------------------
 
 function buildReadmeSheet(wb: ExcelJS.Workbook, deal: Deal, result: PipelineResult): void {
-  const ws = wb.addWorksheet("README");
-  const qg = result.qualityGate || {};
+  var ws = wb.addWorksheet("README");
+  var qg = result.qualityGate || {};
 
-  const rows: [string, string][] = [
-    ["EC-CIM Version", "1.7.0"],
-    ["Dataset D", `Generated ${new Date().toISOString()}`],
-    ["Deal Name", deal.deal_name],
-    ["Claim Depth", deal.claim_depth],
-    ["CIM Quality Gate", String(qg.gate_decision || "N/A")],
+  var rows: [string, string][] = [
+    ["EC-CIM VERSION", "v1.7.0"],
+    ["DATASET", "Dataset D — Full Pipeline Output"],
+    ["DEAL NAME", deal.deal_name],
+    ["CLAIM_DEPTH", deal.claim_depth],
+    ["RUN TIMESTAMP (UTC)", new Date().toISOString()],
+    ["PACKAGING", "EXCEL (API Pipeline)"],
+    ["", ""],
+    ["CIM QUALITY GATE", ""],
+    ["Gate Decision", String(qg.gate_decision || "N/A")],
     ["Quality Score", String(qg.quality_score || "N/A")],
     ["Financial Data Density", String(qg.financial_data_density || "N/A")],
     ["Customer & Concentration Data", String(qg.customer_concentration_data || "N/A")],
@@ -156,242 +222,167 @@ function buildReadmeSheet(wb: ExcelJS.Workbook, deal: Deal, result: PipelineResu
     rows.push(["Data Gaps", (qg.data_gaps_identified as string[]).join("; ")]);
   }
 
-  rows.forEach((row) => ws.addRow(row));
+  // Column definitions
+  rows.push(["", ""]);
+  rows.push(["COLUMN DEFINITIONS", ""]);
+  rows.push(["claim_id", "Unique identifier for each extracted claim"]);
+  rows.push(["claim_text", "Atomic, falsifiable assertion extracted from the CIM"]);
+  rows.push(["claim_category", "Underwriting surface bucket"]);
+  rows.push(["claim_priority_score", "IC priority ranking score (0-1)"]);
+  rows.push(["mechanism_of_value", "Causal bridge from claim to economic outcome"]);
+  rows.push(["economic_driver", "Primary value lever"]);
+  rows.push(["kpi_to_validate", "Measurable KPI to test the claim"]);
+  rows.push(["claim_type", "Standard Claim or Absence Claim"]);
+
+  // Governing rules
+  rows.push(["", ""]);
+  rows.push(["GOVERNING RULES", ""]);
+  rows.push(["No Placeholder Cells", "TBD, N/A, pending are prohibited"]);
+  rows.push(["Anti-Fluff Rule", "Every claim must be falsifiable and economically linked"]);
+  rows.push(["Atomic Enforcement", "One underwriting assertion per claim"]);
+  rows.push(["CORE Band", "20-30 claims required for CORE depth"]);
+
+  for (var i = 0; i < rows.length; i++) {
+    ws.addRow(rows[i]);
+  }
+
   styleHeaderColumn(ws, 1);
 }
 
-function buildClaimRegisterSheet(wb: ExcelJS.Workbook, stage1?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Claim Register");
-  const headers = [
-    "claim_id", "claim_text", "claim_category", "cim_section",
-    "claim_priority_score", "source_page", "source_excerpt",
-    "mechanism_of_value", "economic_driver", "kpi_to_validate", "claim_type",
-  ];
-  ws.addRow(headers);
-  styleHeaderRow(ws);
-
-  const claims = (stage1?.claims as Record<string, unknown>[]) || [];
-  for (const claim of claims) {
-    ws.addRow(headers.map((h) => String(claim[h] ?? "")));
-  }
-
-  autoWidth(ws);
-}
-
 function buildSelfAuditSheet(wb: ExcelJS.Workbook, stage1?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Self-Audit");
+  var ws = wb.addWorksheet("Self-Audit");
   ws.addRow(["Check", "Result", "Detail"]);
   styleHeaderRow(ws);
 
-  const audit = (stage1?.self_audit as Record<string, unknown>) || {};
+  var audit = (stage1?.self_audit as Record<string, unknown>) || {};
 
-  // Standard audit checks
-  const checks: [string, unknown][] = [
-    ["claim_count", audit.claim_count],
-    ["surfaces_covered", JSON.stringify(audit.surfaces_covered || {})],
-    ["forecast_claim_count", audit.forecast_claim_count],
-    ["absence_claim_count", audit.absence_claim_count],
-    ["all_checks_passed", audit.all_checks_passed],
-  ];
+  // If the self_audit is a rich object, enumerate all keys
+  var auditKeys = Object.keys(audit);
+  if (auditKeys.length > 0) {
+    for (var i = 0; i < auditKeys.length; i++) {
+      var key = auditKeys[i];
+      var val = audit[key];
+      var detail: string;
 
-  for (const [check, value] of checks) {
-    const passed = value !== false && value !== 0;
-    ws.addRow([check, passed ? "PASS" : "FAIL", String(value ?? "")]);
+      if (typeof val === "object" && val !== null) {
+        detail = JSON.stringify(val);
+      } else {
+        detail = String(val ?? "");
+      }
+
+      var passed = val !== false && val !== 0;
+      ws.addRow([key, passed ? "PASS" : "FAIL", detail]);
+    }
+  }
+
+  // Also add claim-level stats from stage1
+  var claims = (stage1?.claims as Record<string, unknown>[]) || [];
+  var absenceClaims = claims.filter(function(c) { return c.claim_type === "Absence Claim"; });
+  var categories: Record<string, string[]> = {};
+  for (var i = 0; i < claims.length; i++) {
+    var cat = String(claims[i].claim_category || "Unknown");
+    if (!categories[cat]) categories[cat] = [];
+    categories[cat].push(String(claims[i].claim_id || ""));
+  }
+
+  ws.addRow(["", "", ""]);
+  ws.addRow(["CLAIM STATISTICS", "", ""]);
+  ws.addRow(["Total Claim Count", String(claims.length), claims.length >= 20 && claims.length <= 30 ? "PASS (CORE band)" : "CHECK"]);
+  ws.addRow(["Standard Claims", String(claims.length - absenceClaims.length), ""]);
+  ws.addRow(["Absence Claims", String(absenceClaims.length), ""]);
+
+  ws.addRow(["", "", ""]);
+  ws.addRow(["UNDERWRITING SURFACE COVERAGE", "", ""]);
+  var catKeys = Object.keys(categories);
+  for (var i = 0; i < catKeys.length; i++) {
+    ws.addRow([catKeys[i], categories[catKeys[i]].length + " claims", categories[catKeys[i]].join(", ")]);
   }
 
   autoWidth(ws);
 }
 
-function buildUnderwritingGatesSheet(wb: ExcelJS.Workbook, stage2?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Underwriting Gates");
-  const headers = [
-    "claim_id", "underwriting_gate", "kill_threshold",
-    "downside_case_if_false", "claim_priority_score", "gate_status",
-  ];
-  ws.addRow(headers);
-  styleHeaderRow(ws);
-
-  const gates = (stage2?.gates as Record<string, unknown>[]) || [];
-  for (const gate of gates) {
-    ws.addRow(headers.map((h) => String(gate[h] ?? "")));
-  }
-
-  autoWidth(ws);
-}
-
-function buildWorkstreamSheet(wb: ExcelJS.Workbook, stage3?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Workstream Execution");
-  const headers = [
-    "claim_id", "diligence_task_type", "artifact_name",
-    "interview_target", "purpose",
-  ];
-  ws.addRow(headers);
-  styleHeaderRow(ws);
-
-  const tasks = (stage3?.tasks as Record<string, unknown>[]) || [];
-  for (const task of tasks) {
-    ws.addRow(headers.map((h) => String(task[h] ?? "")));
-  }
-
-  autoWidth(ws);
-}
-
-function buildInterdependencyMatrixSheet(
+function buildNegativeCouplingSheet(
   wb: ExcelJS.Workbook,
+  couplings: Record<string, unknown>[],
   stage4?: Record<string, unknown>
 ): void {
-  const ws = wb.addWorksheet("Interdependency Matrix");
-  const headers = [
-    "claim_id_a", "claim_id_b", "kpi_shared", "driver_shared",
-    "semantic", "evidence_chain", "relationship_strength", "relationship_type",
-  ];
-  ws.addRow(headers);
-  styleHeaderRow(ws);
-
-  const pairs = (stage4?.matrix_pairs as Record<string, unknown>[]) || [];
-  for (const pair of pairs) {
-    ws.addRow(headers.map((h) => {
-      const val = pair[h];
-      return typeof val === "number" ? val : String(val ?? "");
-    }));
+  if (couplings.length > 0) {
+    buildDynamicArraySheet(wb, "Negative Coupling", couplings);
+    return;
   }
 
-  autoWidth(ws);
-}
-
-function buildHubRiskSheet(wb: ExcelJS.Workbook, stage4?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Hub Risk Summary");
-  const headers = ["claim_id", "blast_radius", "linked_claims", "hub_classification_tag"];
-  ws.addRow(headers);
-  styleHeaderRow(ws);
-
-  const hubs = (stage4?.hub_risk as Record<string, unknown>[]) || [];
-  for (const hub of hubs) {
-    ws.addRow([
-      String(hub.claim_id ?? ""),
-      Number(hub.blast_radius ?? 0),
-      Array.isArray(hub.linked_claims)
-        ? (hub.linked_claims as string[]).join(", ")
-        : String(hub.linked_claims ?? ""),
-      String(hub.hub_classification_tag ?? ""),
-    ]);
-  }
-
-  autoWidth(ws);
-}
-
-function buildCascadeScenariosSheet(wb: ExcelJS.Workbook, stage4?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Cascade Scenarios");
-  const headers = [
-    "hub_claim_id", "hub_tag", "blast_radius",
-    "economic_driver", "cascade_claims", "propagation_chain",
-  ];
-  ws.addRow(headers);
-  styleHeaderRow(ws);
-
-  const cascades = (stage4?.cascade_scenarios as Record<string, unknown>[]) || [];
-  for (const c of cascades) {
-    ws.addRow([
-      String(c.hub_claim_id ?? ""),
-      String(c.hub_tag ?? ""),
-      Number(c.blast_radius ?? 0),
-      String(c.economic_driver ?? ""),
-      Array.isArray(c.cascade_claims)
-        ? (c.cascade_claims as string[]).join(", ")
-        : String(c.cascade_claims ?? ""),
-      String(c.propagation_chain ?? ""),
-    ]);
-  }
-
-  autoWidth(ws);
-}
-
-function buildNegativeCouplingSheet(wb: ExcelJS.Workbook, stage4?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Negative Coupling");
-  const headers = [
-    "claim_id_a", "claim_id_b", "coupling_family",
-    "dimension_signature", "inconsistency_description", "severity",
-  ];
-  ws.addRow(headers);
-  styleHeaderRow(ws);
-
-  const couplings = (stage4?.negative_couplings as Record<string, unknown>[]) || [];
-  if (couplings.length === 0) {
-    // Empty array is valid under STRICT mode — add note
-    ws.addRow(["No negative couplings detected under STRICT mode", "", "", "", "", ""]);
+  // Empty array is valid under STRICT mode
+  var ws = wb.addWorksheet("Negative Coupling");
+  var note = stage4?.negative_coupling_note as string;
+  if (note) {
+    ws.addRow(["Note", note]);
   } else {
-    for (const c of couplings) {
-      ws.addRow(headers.map((h) => String(c[h] ?? "")));
+    ws.addRow(["Status", "No negative couplings detected under STRICT mode"]);
+  }
+  ws.addRow(["", "This is a valid result — STRICT mode only flags confirmed contradictions"]);
+  autoWidth(ws);
+}
+
+function buildExportValidationSheet(wb: ExcelJS.Workbook, stage5?: Record<string, unknown>): void {
+  var ws = wb.addWorksheet("Export Validation Gate");
+  ws.addRow(["Check", "Result", "Detail"]);
+  styleHeaderRow(ws);
+
+  var gate = (stage5?.export_validation_gate as Record<string, unknown>) || {};
+  var gateKeys = Object.keys(gate);
+
+  for (var i = 0; i < gateKeys.length; i++) {
+    var key = gateKeys[i];
+    var val = gate[key];
+
+    if (key === "checks" && typeof val === "object" && val !== null) {
+      // Nested checks object
+      var checks = val as Record<string, unknown>;
+      var checkKeys = Object.keys(checks);
+      for (var j = 0; j < checkKeys.length; j++) {
+        var checkVal = checks[checkKeys[j]];
+        var checkStr = String(checkVal ?? "");
+        // Determine pass/fail: check for boolean true, string "PASS", or strings starting with "PASS"
+        var isPassing = checkVal === true || checkStr === "PASS" || checkStr.indexOf("PASS") === 0;
+        ws.addRow([checkKeys[j], isPassing ? "PASS" : "FAIL", checkStr]);
+      }
+    } else if (typeof val === "object" && val !== null) {
+      ws.addRow([key, "", JSON.stringify(val)]);
+    } else {
+      var valStr = String(val ?? "");
+      var isPass = val === true || valStr === "PASS" || valStr === "true" || valStr.indexOf("PASS") === 0;
+      ws.addRow([key, isPass ? "PASS" : String(val), valStr]);
     }
   }
 
   autoWidth(ws);
 }
 
-function buildKillHubsSheet(wb: ExcelJS.Workbook, stage4?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Top 5 IC Kill Hubs");
-  const headers = ["rank", "claim_id", "hub_tag", "blast_radius", "ic_gating_rationale"];
-  ws.addRow(headers);
-  styleHeaderRow(ws);
+// ---------------------------------------------------------------------------
+// Helper: extract array from stage data, trying multiple key patterns
+// ---------------------------------------------------------------------------
 
-  const killHubs = (stage4?.top_5_kill_hubs as Record<string, unknown>[]) || [];
-  for (const hub of killHubs) {
-    ws.addRow([
-      Number(hub.rank ?? 0),
-      String(hub.claim_id ?? ""),
-      String(hub.hub_tag ?? ""),
-      Number(hub.blast_radius ?? 0),
-      String(hub.ic_gating_rationale ?? ""),
-    ]);
+function getArray(stageData: Record<string, unknown> | undefined, primaryKey: string): Record<string, unknown>[] {
+  if (!stageData) return [];
+
+  // Try primary key directly
+  if (Array.isArray(stageData[primaryKey])) {
+    return stageData[primaryKey] as Record<string, unknown>[];
   }
 
-  autoWidth(ws);
-}
-
-function buildThesisPillarsSheet(wb: ExcelJS.Workbook, stage5?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Thesis Pillars");
-  const headers = [
-    "pillar_id", "pillar_name", "pillar_thesis", "supporting_claim_ids",
-    "economic_driver", "key_kpis", "kill_threshold", "hub_claims_linked",
-    "blast_radius_exposure", "negative_coupling_trigger",
-    "pillar_collapse_path_if_breached", "ic_red_threshold_condition",
-  ];
-  ws.addRow(headers);
-  styleHeaderRow(ws);
-
-  const pillars = (stage5?.pillars as Record<string, unknown>[]) || [];
-  for (const p of pillars) {
-    ws.addRow(headers.map((h) => {
-      const val = p[h];
-      if (Array.isArray(val)) return (val as string[]).join(", ");
-      return typeof val === "number" ? val : String(val ?? "");
-    }));
+  // Try nested inside a stage wrapper (e.g., stage_2.gates)
+  var stageKeys = Object.keys(stageData);
+  for (var i = 0; i < stageKeys.length; i++) {
+    var nested = stageData[stageKeys[i]];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      var inner = nested as Record<string, unknown>;
+      if (Array.isArray(inner[primaryKey])) {
+        return inner[primaryKey] as Record<string, unknown>[];
+      }
+    }
   }
 
-  autoWidth(ws);
-}
-
-function buildExportValidationSheet(wb: ExcelJS.Workbook, stage5?: Record<string, unknown>): void {
-  const ws = wb.addWorksheet("Export Validation Gate");
-  ws.addRow(["Check", "Result", "Detail"]);
-  styleHeaderRow(ws);
-
-  const gate = (stage5?.export_validation_gate as Record<string, unknown>) || {};
-  const checks = (gate.checks as Record<string, unknown>) || {};
-
-  for (const [check, result] of Object.entries(checks)) {
-    const passed = result === true || result === "PASS";
-    ws.addRow([check, passed ? "PASS" : "FAIL", String(result ?? "")]);
-  }
-
-  // Overall result
-  ws.addRow([
-    "ALL_CHECKS_PASSED",
-    gate.all_checks_passed ? "PASS" : "FAIL",
-    "",
-  ]);
-
-  autoWidth(ws);
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -399,7 +390,7 @@ function buildExportValidationSheet(wb: ExcelJS.Workbook, stage5?: Record<string
 // ---------------------------------------------------------------------------
 
 function styleHeaderRow(ws: ExcelJS.Worksheet): void {
-  const row = ws.getRow(1);
+  var row = ws.getRow(1);
   row.font = { bold: true, size: 10 };
   row.fill = {
     type: "pattern",
@@ -411,14 +402,16 @@ function styleHeaderRow(ws: ExcelJS.Worksheet): void {
 function styleHeaderColumn(ws: ExcelJS.Worksheet, colNum: number): void {
   ws.getColumn(colNum).font = { bold: true };
   ws.getColumn(colNum).width = 35;
-  ws.getColumn(colNum + 1).width = 60;
+  if (ws.getColumn(colNum + 1)) {
+    ws.getColumn(colNum + 1).width = 60;
+  }
 }
 
 function autoWidth(ws: ExcelJS.Worksheet): void {
-  ws.columns.forEach((col) => {
-    let maxLen = 12;
-    col.eachCell?.({ includeEmpty: false }, (cell) => {
-      const len = String(cell.value ?? "").length;
+  ws.columns.forEach(function(col) {
+    var maxLen = 12;
+    col.eachCell?.({ includeEmpty: false }, function(cell) {
+      var len = String(cell.value ?? "").length;
       if (len > maxLen) maxLen = Math.min(len, 60);
     });
     col.width = maxLen + 2;
@@ -430,151 +423,143 @@ function autoWidth(ws: ExcelJS.Worksheet): void {
 // ===========================================================================
 
 async function buildIcInsights(deal: Deal, result: PipelineResult): Promise<Buffer> {
-  const qg = result.qualityGate || {};
-  const claims = ((result.stage1?.claims as Record<string, unknown>[]) || [])
-    .sort((a, b) => Number(b.claim_priority_score ?? 0) - Number(a.claim_priority_score ?? 0));
-  const gates = (result.stage2?.gates as Record<string, unknown>[]) || [];
-  const tasks = (result.stage3?.tasks as Record<string, unknown>[]) || [];
-  const killHubs = (result.stage4?.top_5_kill_hubs as Record<string, unknown>[]) || [];
-  const pillars = (result.stage5?.pillars as Record<string, unknown>[]) || [];
-  const icContent = result.icInsights || {};
+  var qg = result.qualityGate || {};
+  var claims = (getArray(result.stage1, "claims"))
+    .sort(function(a, b) { return Number(b.claim_priority_score ?? 0) - Number(a.claim_priority_score ?? 0); });
+  var gates = getArray(result.stage2, "gates");
+  var tasks = getArray(result.stage3, "tasks");
+  if (tasks.length === 0) tasks = getArray(result.stage3, "artifact_rows");
+  var killHubs = getArray(result.stage4, "top_5_kill_hubs");
+  var pillars = getArray(result.stage5, "pillars");
 
-  const sections: Paragraph[] = [];
+  var sections: Paragraph[] = [];
 
   // ---- Section 1: Cover Page ----
   sections.push(
     heading("IC Insights", HeadingLevel.TITLE),
-    para(`Deal: ${deal.deal_name}`),
-    para(`EC-CIM Version: 1.7.0`),
-    para(`Claim Depth: ${deal.claim_depth}`),
-    para(`Run Timestamp: ${new Date().toISOString()}`),
-    para(`CIM Quality Gate: ${qg.gate_decision || "N/A"} (Score: ${qg.quality_score || "N/A"})`),
-    para(""),
+    para("Deal: " + deal.deal_name),
+    para("EC-CIM Version: 1.7.0"),
+    para("Claim Depth: " + deal.claim_depth),
+    para("Run Timestamp: " + new Date().toISOString()),
+    para("CIM Quality Gate: " + (qg.gate_decision || "N/A") + " (Score: " + (qg.quality_score || "N/A") + ")"),
+    para("")
   );
 
   // ---- Section 2: Executive Summary ----
   sections.push(heading("Executive Summary", HeadingLevel.HEADING_1));
-  if (icContent.executive_summary) {
-    sections.push(para(String(icContent.executive_summary)));
-  } else {
+  sections.push(
+    para(
+      "The analysis surfaces " + claims.length + " claims across " +
+      (deal.claim_depth === "CORE" ? "5" : "6+") + " underwriting surfaces. " +
+      killHubs.length + " hub claims identified with potential cascade risk. " +
+      pillars.length + " thesis pillars constructed with STRICT coupling surface."
+    )
+  );
+  if (qg.gate_decision === "CONDITIONAL_PASS") {
     sections.push(
       para(
-        `The analysis surfaces ${claims.length} claims across ` +
-          `${deal.claim_depth === "CORE" ? "5" : "6+"} underwriting surfaces. ` +
-          `${killHubs.length} hub claims identified with potential cascade risk.`
+        "Note: CIM Quality Gate returned CONDITIONAL PASS (score: " + qg.quality_score + "). " +
+        "Outputs may be constrained by source data limitations."
       )
     );
-    if (qg.gate_decision === "CONDITIONAL_PASS") {
-      sections.push(
-        para(
-          `Note: CIM Quality Gate returned CONDITIONAL PASS (score: ${qg.quality_score}). ` +
-            `Outputs may be constrained by source data limitations.`
-        )
-      );
-    }
   }
 
   // ---- Section 3: Top 8 Claims ----
   sections.push(heading("Investment Thesis Claims — Top 8", HeadingLevel.HEADING_1));
-  const top8 = claims.slice(0, 8);
-  for (const claim of top8) {
-    const isAbsence = claim.claim_type === "Absence Claim";
+  var top8 = claims.slice(0, 8);
+  for (var i = 0; i < top8.length; i++) {
+    var claim = top8[i];
+    var isAbsence = claim.claim_type === "Absence Claim";
     sections.push(
       heading(
-        `${claim.claim_id}${isAbsence ? " [ABSENCE CLAIM]" : ""}`,
+        String(claim.claim_id) + (isAbsence ? " [ABSENCE CLAIM]" : ""),
         HeadingLevel.HEADING_2
       ),
       para(String(claim.claim_text || "")),
-      para(`Mechanism: ${claim.mechanism_of_value || "N/A"}`),
-      para(`Economic Driver: ${claim.economic_driver || "N/A"}`),
-      para(`KPI: ${claim.kpi_to_validate || "N/A"}`),
-      para(`Priority Score: ${claim.claim_priority_score || "N/A"}`),
-      para(""),
+      para("Category: " + (claim.claim_category || "N/A")),
+      para("Mechanism: " + (claim.mechanism_of_value || "N/A")),
+      para("Economic Driver: " + (claim.economic_driver || "N/A")),
+      para("KPI: " + (claim.kpi_to_validate || "N/A")),
+      para("Priority Score: " + (claim.claim_priority_score || "N/A")),
+      para("")
     );
   }
 
-  // ---- Section 4: Underwriting Gates & Kill Thresholds ----
+  // ---- Section 4: Underwriting Gates ----
   sections.push(heading("Underwriting Gates & Kill Thresholds", HeadingLevel.HEADING_1));
-  if (icContent.underwriting_gates_summary) {
-    sections.push(para(String(icContent.underwriting_gates_summary)));
-  }
-  // Add top gates (Tier-1 claims)
-  const tier1Ids = new Set(claims.slice(0, 15).map((c) => c.claim_id));
-  const criticalGates = gates.filter((g) => tier1Ids.has(g.claim_id as string));
-  for (const gate of criticalGates.slice(0, 10)) {
+  for (var i = 0; i < Math.min(gates.length, 15); i++) {
+    var gate = gates[i];
     sections.push(
       para(
-        `${gate.claim_id}: ${gate.underwriting_gate} — ` +
-          `Kill: ${gate.kill_threshold} — Downside: ${gate.downside_case_if_false}`
+        String(gate.claim_id) + ": " + String(gate.underwriting_gate || "") + " — " +
+        "Kill: " + String(gate.kill_threshold || "N/A") + " — " +
+        "Downside: " + String(gate.downside_case_if_false || "N/A")
       )
     );
   }
 
   // ---- Section 5: Top 5 IC Kill Risks ----
   sections.push(heading("Top 5 IC Kill Risks", HeadingLevel.HEADING_1));
-  for (const hub of killHubs) {
+  for (var i = 0; i < killHubs.length; i++) {
+    var hub = killHubs[i];
     sections.push(
-      heading(`#${hub.rank} — ${hub.claim_id} (${hub.hub_tag})`, HeadingLevel.HEADING_2),
-      para(`Blast Radius: ${hub.blast_radius}`),
-      para(`IC Gating Rationale: ${hub.ic_gating_rationale || "N/A"}`),
-      para(""),
+      heading("#" + (hub.rank || (i + 1)) + " — " + hub.claim_id + " (" + (hub.hub_tag || "") + ")", HeadingLevel.HEADING_2),
+      para("Blast Radius: " + (hub.blast_radius || "N/A")),
+      para("IC Gating Rationale: " + (hub.ic_gating_rationale || "N/A")),
+      para("")
     );
   }
 
   // ---- Section 6: Diligence Workplan ----
   sections.push(heading("Diligence Workplan", HeadingLevel.HEADING_1));
-  // Task type distribution
-  const taskCounts: Record<string, number> = {};
-  for (const task of tasks) {
-    const type = String(task.diligence_task_type || "Other");
-    taskCounts[type] = (taskCounts[type] || 0) + 1;
+  var taskCounts: Record<string, number> = {};
+  for (var i = 0; i < tasks.length; i++) {
+    var taskType = String(tasks[i].diligence_task_type || tasks[i].task_type || "Other");
+    taskCounts[taskType] = (taskCounts[taskType] || 0) + 1;
   }
   sections.push(
-    para(`Total tasks: ${tasks.length}`),
-    para(`Distribution: ${Object.entries(taskCounts).map(([t, c]) => `${t} (${c})`).join(", ")}`),
-    para(""),
+    para("Total tasks: " + tasks.length),
+    para("Distribution: " + Object.entries(taskCounts).map(function(e) { return e[0] + " (" + e[1] + ")"; }).join(", ")),
+    para("")
   );
 
-  // ---- Section 7: Thesis Pillars with STRICT Coupling ----
+  // ---- Section 7: Thesis Pillars ----
   sections.push(heading("Thesis Pillars with STRICT Coupling Surface", HeadingLevel.HEADING_1));
-  for (const pillar of pillars) {
+  for (var i = 0; i < pillars.length; i++) {
+    var p = pillars[i];
     sections.push(
-      heading(
-        `${pillar.pillar_id}: ${pillar.pillar_name}`,
-        HeadingLevel.HEADING_2
-      ),
-      para(`Thesis: ${pillar.pillar_thesis || "N/A"}`),
-      para(`Supporting Claims: ${Array.isArray(pillar.supporting_claim_ids) ? (pillar.supporting_claim_ids as string[]).join(", ") : pillar.supporting_claim_ids || "N/A"}`),
-      para(`Key KPIs: ${pillar.key_kpis || "N/A"}`),
-      para(`Kill Threshold: ${pillar.kill_threshold || "N/A"}`),
-      para(`Negative Coupling Trigger: ${pillar.negative_coupling_trigger || "N/A"}`),
-      para(`Collapse Path: ${pillar.pillar_collapse_path_if_breached || "N/A"}`),
-      para(`IC RED Condition: ${pillar.ic_red_threshold_condition || "N/A"}`),
-      para(""),
+      heading(String(p.pillar_id || "") + ": " + String(p.pillar_name || ""), HeadingLevel.HEADING_2),
+      para("Thesis: " + (p.pillar_thesis || "N/A")),
+      para("Supporting Claims: " + formatArrayOrString(p.supporting_claim_ids)),
+      para("Key KPIs: " + formatArrayOrString(p.key_kpis)),
+      para("Kill Threshold: " + (p.kill_threshold || "N/A")),
+      para("Negative Coupling Trigger: " + (p.negative_coupling_trigger || "N/A")),
+      para("Collapse Path: " + (p.pillar_collapse_path_if_breached || "N/A")),
+      para("IC RED Condition: " + (p.ic_red_threshold_condition || "N/A")),
+      para("")
     );
   }
 
-  // ---- Section 8: Appendix — Full Claim Register ----
+  // ---- Section 8: Appendix ----
   sections.push(heading("Appendix: Full Claim Register", HeadingLevel.HEADING_1));
-  for (const claim of claims) {
-    const isAbsence = claim.claim_type === "Absence Claim";
+  for (var i = 0; i < claims.length; i++) {
+    var c = claims[i];
     sections.push(
       para(
-        `${claim.claim_id}${isAbsence ? " [ABSENCE]" : ""} | ` +
-          `${claim.claim_category} | Score: ${claim.claim_priority_score} | ` +
-          `${claim.economic_driver} | ${claim.claim_text}`
+        String(c.claim_id) + (c.claim_type === "Absence Claim" ? " [ABSENCE]" : "") + " | " +
+        String(c.claim_category || "") + " | Score: " + String(c.claim_priority_score || "") + " | " +
+        String(c.economic_driver || "") + " | " + String(c.claim_text || "")
       )
     );
   }
 
-  // ---- Footer ----
   sections.push(
     para(""),
-    para("IC Insights v1.7.0 — True Bearing LLC → IC Sentinel → CIMScan"),
-    para("This document presents structured diligence findings. It does not constitute investment advice."),
+    para("IC Insights v1.7.0 — True Bearing LLC / IC Sentinel / CIMScan"),
+    para("This document presents structured diligence findings. It does not constitute investment advice.")
   );
 
-  const doc = new Document({
+  var doc = new Document({
     sections: [{ children: sections }],
   });
 
@@ -586,11 +571,17 @@ async function buildIcInsights(deal: Deal, result: PipelineResult): Promise<Buff
 // ---------------------------------------------------------------------------
 
 function heading(text: string, level: (typeof HeadingLevel)[keyof typeof HeadingLevel]): Paragraph {
-  return new Paragraph({ text, heading: level });
+  return new Paragraph({ text: text, heading: level });
 }
 
 function para(text: string): Paragraph {
   return new Paragraph({ children: [new TextRun(text)] });
+}
+
+function formatArrayOrString(val: unknown): string {
+  if (Array.isArray(val)) return val.join(", ");
+  if (val) return String(val);
+  return "N/A";
 }
 
 // ===========================================================================
@@ -598,82 +589,65 @@ function para(text: string): Paragraph {
 // ===========================================================================
 
 async function buildSynopsis(deal: Deal, result: PipelineResult): Promise<string> {
-  // If EC-CIM returned a synopsis, use it
+  // If any stage returned a synopsis, use it
   if (result.synopsis && result.synopsis.length > 100) {
     return result.synopsis;
   }
 
-  // Otherwise, generate one from the pipeline data
-  const qg = result.qualityGate || {};
-  const claims = (result.stage1?.claims as Record<string, unknown>[]) || [];
-  const killHubs = (result.stage4?.top_5_kill_hubs as Record<string, unknown>[]) || [];
-  const pillars = (result.stage5?.pillars as Record<string, unknown>[]) || [];
-  const absenceClaims = claims.filter((c) => c.claim_type === "Absence Claim");
+  var qg = result.qualityGate || {};
+  var claims = getArray(result.stage1, "claims");
+  var killHubs = getArray(result.stage4, "top_5_kill_hubs");
+  var pillars = getArray(result.stage5, "pillars");
+  var absenceClaims = claims.filter(function(c) { return c.claim_type === "Absence Claim"; });
 
-  const lines: string[] = [
-    `# Workstream Synopsis: ${deal.deal_name}`,
-    ``,
-    `**EC-CIM v1.7.0 | ${deal.claim_depth} | ${new Date().toISOString()}**`,
-    ``,
-    `---`,
-    ``,
-    `## CIM Quality Gate`,
-    ``,
-    `**Decision:** ${qg.gate_decision || "N/A"} | **Score:** ${qg.quality_score || "N/A"}`,
-    ``,
-    `---`,
-    ``,
-    `## Stage 1: CIMScan (Claim Extraction)`,
-    ``,
-    `**Status:** PASS | **Claims:** ${claims.length} | **Absence Claims:** ${absenceClaims.length}`,
-    ``,
-    `Top 3 claims by priority:`,
+  var lines: string[] = [
+    "# Workstream Synopsis: " + deal.deal_name,
+    "",
+    "**EC-CIM v1.7.0 | " + deal.claim_depth + " | " + new Date().toISOString() + "**",
+    "",
+    "---",
+    "",
+    "## CIM Quality Gate",
+    "",
+    "**Decision:** " + (qg.gate_decision || "N/A") + " | **Score:** " + (qg.quality_score || "N/A"),
+    "",
+    "---",
+    "",
+    "## Stage 1: CIMScan (Claim Extraction)",
+    "",
+    "**Claims:** " + claims.length + " | **Absence Claims:** " + absenceClaims.length,
+    "",
+    "Top 3 claims by priority:",
   ];
 
-  const sorted = [...claims].sort(
-    (a, b) => Number(b.claim_priority_score ?? 0) - Number(a.claim_priority_score ?? 0)
-  );
-  for (const c of sorted.slice(0, 3)) {
-    lines.push(`- **${c.claim_id}** (${c.claim_priority_score}): ${c.claim_text}`);
+  var sorted = claims.slice().sort(function(a, b) {
+    return Number(b.claim_priority_score ?? 0) - Number(a.claim_priority_score ?? 0);
+  });
+  for (var i = 0; i < Math.min(3, sorted.length); i++) {
+    lines.push("- **" + sorted[i].claim_id + "** (" + sorted[i].claim_priority_score + "): " + sorted[i].claim_text);
+  }
+
+  lines.push("", "---", "", "## Stage 4: Interdependency Analysis", "", "**Top IC Kill Hubs:**");
+  for (var i = 0; i < Math.min(3, killHubs.length); i++) {
+    lines.push("- **" + killHubs[i].claim_id + "** — " + killHubs[i].hub_tag + " (blast radius: " + killHubs[i].blast_radius + ")");
+  }
+
+  lines.push("", "---", "", "## Stage 5: Thesis Pillars", "");
+  for (var i = 0; i < pillars.length; i++) {
+    lines.push("- **" + pillars[i].pillar_id + " " + pillars[i].pillar_name + ":** " + (pillars[i].pillar_thesis || "N/A"));
   }
 
   lines.push(
-    ``,
-    `---`,
-    ``,
-    `## Stage 4: Interdependency Analysis`,
-    ``,
-    `**Top IC Kill Hubs:**`,
-  );
-  for (const hub of killHubs.slice(0, 3)) {
-    lines.push(`- **${hub.claim_id}** — ${hub.hub_tag} (blast radius: ${hub.blast_radius})`);
-  }
-
-  lines.push(
-    ``,
-    `---`,
-    ``,
-    `## Stage 5: Thesis Pillars`,
-    ``,
-  );
-  for (const p of pillars) {
-    lines.push(`- **${p.pillar_id} ${p.pillar_name}:** ${p.pillar_thesis || "N/A"}`);
-  }
-
-  lines.push(
-    ``,
-    `---`,
-    ``,
-    `## Pipeline Completion`,
-    ``,
-    `- CIM Quality Gate: ${qg.gate_decision}`,
-    `- Absence Claim Count: ${absenceClaims.length}`,
-    `- Total Claims: ${claims.length}`,
-    `- Kill Hubs: ${killHubs.length}`,
-    `- Pillars: ${pillars.length}`,
-    ``,
-    `---`,
-    `*Workstream Synopsis — EC-CIM v1.7.0 — True Bearing LLC → IC Sentinel → CIMScan*`,
+    "", "---", "",
+    "## Pipeline Completion", "",
+    "- CIM Quality Gate: " + (qg.gate_decision || "N/A"),
+    "- Total Claims: " + claims.length,
+    "- Absence Claims: " + absenceClaims.length,
+    "- Kill Hubs: " + killHubs.length,
+    "- Pillars: " + pillars.length,
+    "",
+    "---",
+    "*Workstream Synopsis — EC-CIM v1.7.0 — True Bearing LLC / IC Sentinel / CIMScan*"
   );
 
   return lines.join("\n");

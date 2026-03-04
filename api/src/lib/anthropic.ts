@@ -1,14 +1,16 @@
 /**
  * Anthropic API Client for EC-CIM Pipeline
  *
- * Handles multi-pass architecture:
- *   Pass 1: CIM PDF + system prompt -> Quality Gate + Stage 1 (claim register)
- *   Stage 2: Claim register -> Underwriting Gates
- *   Stage 3: Claim register + Gates -> Workstream Execution
- *   Stage 4: All previous -> Interdependency Analysis
- *   Stage 5 + Insights: All previous -> Thesis Pillars + IC Insights
+ * Uses the FULL REFERENCE system prompt (~13K tokens) for maximum output
+ * quality. Each stage uses the specific run command defined in the prompt
+ * spec, matching how manual chat runs operate.
  *
- * Uses the Messages API with document (PDF) support.
+ * Token budget per stage is tuned to allow full output:
+ *   Pass 1 (CIM + Quality Gate + Claims): 16K
+ *   Stage 2 (Underwriting Gates): 16K
+ *   Stage 3 (Workstream Execution): 16K
+ *   Stage 4 (Interdependency Analysis — largest output): 24K
+ *   Stage 5 + Insights (Thesis Pillars + IC Insights): 16K
  */
 
 import fs from "node:fs";
@@ -21,13 +23,14 @@ import { fileURLToPath } from "node:url";
 
 var ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 var ANTHROPIC_API_VERSION = "2023-06-01";
-
-// Model for pipeline execution
 var PIPELINE_MODEL = "claude-sonnet-4-20250514";
 
-// Max tokens per call
+// Per-stage token budgets
 var PASS_1_MAX_TOKENS = 16000;
-var STAGE_MAX_TOKENS = 16000;
+var STAGE_2_MAX_TOKENS = 16000;
+var STAGE_3_MAX_TOKENS = 16000;
+var STAGE_4_MAX_TOKENS = 24000;  // Largest output: matrix + hubs + cascades + coupling + kill hubs
+var STAGE_5_MAX_TOKENS = 16000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,7 +61,7 @@ export interface PipelinePassResult {
 }
 
 // ---------------------------------------------------------------------------
-// System prompt loader
+// System prompt loader — uses FULL REFERENCE for maximum output quality
 // ---------------------------------------------------------------------------
 
 var cachedSystemPrompt: string | null = null;
@@ -76,7 +79,7 @@ export function loadSystemPrompt(): string {
   if (!fs.existsSync(promptPath)) {
     throw new Error(
       "EC-CIM system prompt not found at " + promptPath + ". " +
-        "Set EC_CIM_SYSTEM_PROMPT_PATH or place the file in api/assets/."
+      "Set EC_CIM_SYSTEM_PROMPT_PATH or place the file in api/assets/."
     );
   }
 
@@ -131,7 +134,7 @@ async function callAnthropic(
 }
 
 // ---------------------------------------------------------------------------
-// Pass 1: CIM PDF -> Quality Gate + Stage 1
+// Pass 1: CIM PDF -> Quality Gate + Stage 1 (Claim Register)
 // ---------------------------------------------------------------------------
 
 export async function executePass1(
@@ -142,6 +145,7 @@ export async function executePass1(
   var systemPrompt = loadSystemPrompt();
   var pdfBase64 = pdfBuffer.toString("base64");
 
+  // Use the exact run command from the prompt spec
   var runCommand = "RUN: CIMScan — CLAIM_DEPTH: " + claimDepth + " — PACKAGING: JSON";
 
   var userContent = [
@@ -169,46 +173,123 @@ export async function executePass1(
 }
 
 // ---------------------------------------------------------------------------
-// Sequential stage execution: one stage per API call
+// Stage 2: Underwriting Gates
 // ---------------------------------------------------------------------------
 
-/**
- * Execute a single stage (or group of stages) of the EC-CIM pipeline.
- *
- * Sends accumulated context from previous stages plus a run command
- * for the specific stage(s) requested.
- *
- * @param contextJson - All previous pipeline output (Pass 1 + any completed stages)
- * @param stages - Stage string, e.g. "2" or "3" or "4" or "5,INSIGHTS"
- * @param claimDepth - "CORE" or "FULL"
- */
-export async function executeStage(
-  contextJson: Record<string, unknown>,
-  stages: string,
+export async function executeStage2(
+  stage1Json: Record<string, unknown>,
   claimDepth: "CORE" | "FULL"
 ): Promise<PipelinePassResult> {
   var systemPrompt = loadSystemPrompt();
 
-  var runCommand =
-    "RUN: EC-CIM Pipeline — STAGES: " + stages + " — CLAIM_SET: " + claimDepth +
-    " — MODE: IC GRADE — ARTIFACT_ROWS: ON — PACKAGING: JSON — ABORT_ON_FAIL: TRUE";
+  // Use the exact Stage 2 run command from the prompt spec
+  var runCommand = "RUN: Populate Underwriting Gates — CLAIM_SET: " + claimDepth + " — PACKAGING: JSON";
 
   var userContent = [
     {
       type: "text",
       text:
-        "Previous Pipeline Output:\n\n" +
-        "```json\n" + JSON.stringify(contextJson, null, 2) + "\n```\n\n" +
+        "Stage 1 Output (Claim Register):\n\n" +
+        "```json\n" + JSON.stringify(stage1Json, null, 2) + "\n```\n\n" +
+        "Produce one underwriting gate per claim. Every claim in the register above must have a corresponding gate row. " +
+        "Include claim_text and economic_driver in each gate row for traceability.\n\n" +
         runCommand,
     },
   ];
 
-  var response = await callAnthropic(
-    systemPrompt,
-    userContent,
-    STAGE_MAX_TOKENS
-  );
+  var response = await callAnthropic(systemPrompt, userContent, STAGE_2_MAX_TOKENS);
+  return parseResponse(response);
+}
 
+// ---------------------------------------------------------------------------
+// Stage 3: Workstream Execution
+// ---------------------------------------------------------------------------
+
+export async function executeStage3(
+  contextJson: Record<string, unknown>,
+  claimDepth: "CORE" | "FULL"
+): Promise<PipelinePassResult> {
+  var systemPrompt = loadSystemPrompt();
+
+  // Use the exact Stage 3 run command from the prompt spec
+  var runCommand = "RUN: Expand Workstream Execution — CLAIM_SET: " + claimDepth + " — ARTIFACT_ROWS: ON — PACKAGING: JSON";
+
+  var userContent = [
+    {
+      type: "text",
+      text:
+        "Previous Pipeline Output (Stages 1-2):\n\n" +
+        "```json\n" + JSON.stringify(contextJson, null, 2) + "\n```\n\n" +
+        "Produce comprehensive diligence tasks for ALL claims. Tier-1 claims (top 15 by priority score) " +
+        "must have multiple task types with named interview targets and specific artifact names. " +
+        "Every claim must have at least one task.\n\n" +
+        runCommand,
+    },
+  ];
+
+  var response = await callAnthropic(systemPrompt, userContent, STAGE_3_MAX_TOKENS);
+  return parseResponse(response);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 4: Interdependency Analysis
+// ---------------------------------------------------------------------------
+
+export async function executeStage4(
+  contextJson: Record<string, unknown>,
+  claimDepth: "CORE" | "FULL"
+): Promise<PipelinePassResult> {
+  var systemPrompt = loadSystemPrompt();
+
+  // Use the exact Stage 4 run command from the prompt spec
+  var runCommand = "RUN: Interdependency Analysis — CLAIM_SET: " + claimDepth + " — MODE: IC GRADE — PACKAGING: JSON";
+
+  var userContent = [
+    {
+      type: "text",
+      text:
+        "Previous Pipeline Output (Stages 1-3):\n\n" +
+        "```json\n" + JSON.stringify(contextJson, null, 2) + "\n```\n\n" +
+        "IMPORTANT — Produce comprehensive interdependency analysis:\n" +
+        "- Evaluate ALL meaningful pairwise claim relationships (minimum 30 pairs for CORE, 80 for FULL). Include all pairs with relationship_strength >= 0.40.\n" +
+        "- Hub Risk Summary: include claim_text, economic_driver, blast_radius, linked_claims, and hub_classification_tag for EVERY claim with blast_radius >= 3.\n" +
+        "- Cascade Scenarios: model propagation chains for each hub.\n" +
+        "- Negative Coupling Detection (STRICT mode): emit only confirmed contradictions.\n" +
+        "- Top 5 IC Kill Hubs: rank by blast_radius + claim_priority_score. Include claim_text, linked_claims, and economic_driver.\n\n" +
+        runCommand,
+    },
+  ];
+
+  var response = await callAnthropic(systemPrompt, userContent, STAGE_4_MAX_TOKENS);
+  return parseResponse(response);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 5 + IC Insights: Thesis Pillars + IC Insights
+// ---------------------------------------------------------------------------
+
+export async function executeStage5(
+  contextJson: Record<string, unknown>,
+  claimDepth: "CORE" | "FULL"
+): Promise<PipelinePassResult> {
+  var systemPrompt = loadSystemPrompt();
+
+  // Use the exact Stage 5 run command from the prompt spec
+  var runCommand = "RUN: Thesis Bundles — CLAIM_SET: " + claimDepth + " — PACKAGING: JSON";
+
+  var userContent = [
+    {
+      type: "text",
+      text:
+        "Previous Pipeline Output (Stages 1-4):\n\n" +
+        "```json\n" + JSON.stringify(contextJson, null, 2) + "\n```\n\n" +
+        "Produce exactly 5 thesis pillars with complete STRICT coupling surface. " +
+        "Include export_validation_gate with detailed check results.\n\n" +
+        runCommand,
+    },
+  ];
+
+  var response = await callAnthropic(systemPrompt, userContent, STAGE_5_MAX_TOKENS);
   return parseResponse(response);
 }
 

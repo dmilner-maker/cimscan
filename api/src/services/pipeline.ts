@@ -57,30 +57,20 @@ interface PipelineResult {
 // Public API
 // ---------------------------------------------------------------------------
 
-/**
- * Execute the full EC-CIM pipeline for a deal.
- *
- * This is the top-level entry point called from the webhook handler (Stripe)
- * or the configure endpoint (promo code). It runs asynchronously — the caller
- * should fire-and-forget after setting status to pipeline_queued.
- *
- * Handles its own error recovery: retry logic, payment resolution, and
- * status updates. The caller does NOT need to handle failures.
- */
 export async function executePipeline(dealId: string): Promise<void> {
   let deal: Deal;
 
   try {
     deal = await fetchDeal(dealId);
   } catch (err) {
-    console.error(`[pipeline] Failed to fetch deal ${dealId}:`, err);
+    console.error("[pipeline] Failed to fetch deal " + dealId + ":", err);
     return;
   }
 
   // Guard: only run from expected statuses
   if (deal.status !== "pipeline_queued" && deal.status !== "received") {
     console.warn(
-      `[pipeline] Deal ${dealId} is in status '${deal.status}', expected 'pipeline_queued'. Skipping.`
+      "[pipeline] Deal " + dealId + " is in status '" + deal.status + "', expected 'pipeline_queued'. Skipping."
     );
     return;
   }
@@ -89,7 +79,7 @@ export async function executePipeline(dealId: string): Promise<void> {
   await updateDealStatus(dealId, "pipeline_running");
 
   console.log(
-    `[pipeline] Starting pipeline for deal ${dealId} (${deal.deal_name}) — ${deal.claim_depth} depth`
+    "[pipeline] Starting pipeline for deal " + dealId + " (" + deal.deal_name + ") — " + deal.claim_depth + " depth"
   );
 
   // --- First attempt ---
@@ -97,7 +87,7 @@ export async function executePipeline(dealId: string): Promise<void> {
 
   if (!result.success && result.abortCode) {
     console.warn(
-      `[pipeline] Deal ${dealId} aborted on first attempt: ${result.abortCode} — ${result.abortReason}`
+      "[pipeline] Deal " + dealId + " aborted on first attempt: " + result.abortCode + " — " + result.abortReason
     );
 
     // Record abort on the deal
@@ -105,7 +95,7 @@ export async function executePipeline(dealId: string): Promise<void> {
 
     // Check retry eligibility
     if (shouldRetry(result.abortCode)) {
-      console.log(`[pipeline] Retrying deal ${dealId} (abort code ${result.abortCode} is retryable)`);
+      console.log("[pipeline] Retrying deal " + dealId + " (abort code " + result.abortCode + " is retryable)");
 
       // Clear abort fields before retry
       await clearAbort(dealId);
@@ -113,7 +103,7 @@ export async function executePipeline(dealId: string): Promise<void> {
 
       if (!result.success && result.abortCode) {
         console.warn(
-          `[pipeline] Deal ${dealId} aborted on retry: ${result.abortCode} — ${result.abortReason}`
+          "[pipeline] Deal " + dealId + " aborted on retry: " + result.abortCode + " — " + result.abortReason
         );
         await recordAbort(dealId, result.abortCode, result.abortReason || "");
       }
@@ -135,7 +125,7 @@ export async function executePipeline(dealId: string): Promise<void> {
  */
 export function triggerPipeline(dealId: string): void {
   executePipeline(dealId).catch((err) => {
-    console.error(`[pipeline] Unhandled error for deal ${dealId}:`, err);
+    console.error("[pipeline] Unhandled error for deal " + dealId + ":", err);
     // Attempt to set deal to a failed state
     updateDealStatus(dealId, "aborted_not_charged").catch(() => {});
   });
@@ -157,7 +147,7 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
     return {
       success: false,
       abortCode: "PIPELINE_ERR_001",
-      abortReason: `Failed to download CIM: ${err instanceof Error ? err.message : String(err)}`,
+      abortReason: "Failed to download CIM: " + (err instanceof Error ? err.message : String(err)),
     };
   }
 
@@ -174,7 +164,7 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
     return {
       success: false,
       abortCode: "PIPELINE_ERR_002",
-      abortReason: `Pass 1 API call failed: ${err instanceof Error ? err.message : String(err)}`,
+      abortReason: "Pass 1 API call failed: " + (err instanceof Error ? err.message : String(err)),
     };
   }
 
@@ -198,6 +188,9 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
 
   const pass1Data = pass1.json as Record<string, unknown>;
 
+  // DEBUG: Log Pass 1 structure
+  console.log("[pipeline] Pass 1 top-level keys: " + Object.keys(pass1Data).join(", "));
+
   // Check for EC-CIM abort in Pass 1 output
   const pass1Abort = extractAbort(pass1Data);
   if (pass1Abort) {
@@ -217,16 +210,16 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
     return {
       success: false,
       abortCode: "CIM_ERR_041",
-      abortReason: `CIM Quality Gate FAIL — score: ${qualityGate?.quality_score}`,
+      abortReason: "CIM Quality Gate FAIL — score: " + qualityGate?.quality_score,
       qualityGate,
     };
   }
 
   console.log(
-    `[pipeline] Pass 1 complete for deal ${deal.id} — ` +
-      `${(pass1Data.claims as unknown[])?.length || 0} claims, ` +
-      `gate: ${gateDecision}, ` +
-      `tokens: ${pass1.inputTokens}/${pass1.outputTokens}`
+    "[pipeline] Pass 1 complete for deal " + deal.id + " — " +
+      ((pass1Data.claims as unknown[])?.length || 0) + " claims, " +
+      "gate: " + gateDecision + ", " +
+      "tokens: " + pass1.inputTokens + "/" + pass1.outputTokens
   );
 
   // ---- Pass 2: Stage 1 JSON → Stages 2–5 + IC Insights ----
@@ -239,7 +232,7 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
     return {
       success: false,
       abortCode: "PIPELINE_ERR_005",
-      abortReason: `Pass 2 API call failed: ${err instanceof Error ? err.message : String(err)}`,
+      abortReason: "Pass 2 API call failed: " + (err instanceof Error ? err.message : String(err)),
     };
   }
 
@@ -261,6 +254,10 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
 
   const pass2Data = pass2.json as Record<string, unknown>;
 
+  // DEBUG: Log Pass 2 structure
+  console.log("[pipeline] Pass 2 top-level keys: " + Object.keys(pass2Data).join(", "));
+  console.log("[pipeline] Pass 2 JSON sample: " + JSON.stringify(pass2Data).slice(0, 2000));
+
   // Check for EC-CIM abort in Pass 2 output
   const pass2Abort = extractAbort(pass2Data);
   if (pass2Abort) {
@@ -274,8 +271,8 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
   }
 
   console.log(
-    `[pipeline] Pass 2 complete for deal ${deal.id} — ` +
-      `tokens: ${pass2.inputTokens}/${pass2.outputTokens}`
+    "[pipeline] Pass 2 complete for deal " + deal.id + " — " +
+      "tokens: " + pass2.inputTokens + "/" + pass2.outputTokens
   );
 
   // ---- Assemble full pipeline result ----
@@ -298,7 +295,7 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
 // ---------------------------------------------------------------------------
 
 async function handleSuccess(deal: Deal, result: PipelineResult): Promise<void> {
-  console.log(`[pipeline] Deal ${deal.id} completed successfully`);
+  console.log("[pipeline] Deal " + deal.id + " completed successfully");
 
   try {
     // Build output files (Dataset D, IC Insights, Synopsis)
@@ -316,17 +313,17 @@ async function handleSuccess(deal: Deal, result: PipelineResult): Promise<void> 
     }
 
     console.log(
-      `[pipeline] Deal ${deal.id} fully delivered — ` +
-        `tokens: ${result.tokenUsage?.totalInput}/${result.tokenUsage?.totalOutput}`
+      "[pipeline] Deal " + deal.id + " fully delivered — " +
+        "tokens: " + (result.tokenUsage?.totalInput || 0) + "/" + (result.tokenUsage?.totalOutput || 0)
     );
   } catch (err) {
-    console.error(`[pipeline] Post-pipeline error for deal ${deal.id}:`, err);
+    console.error("[pipeline] Post-pipeline error for deal " + deal.id + ":", err);
     // Pipeline succeeded but delivery failed — don't charge
     await updateDealStatus(deal.id, "aborted_not_charged");
     await recordAbort(
       deal.id,
       "PIPELINE_ERR_010",
-      `Output delivery failed: ${err instanceof Error ? err.message : String(err)}`
+      "Output delivery failed: " + (err instanceof Error ? err.message : String(err))
     );
     if (isStripeDeal(deal)) {
       await resolvePayment(deal.id, { success: false, abortCode: "PIPELINE_ERR_010" });
@@ -336,7 +333,7 @@ async function handleSuccess(deal: Deal, result: PipelineResult): Promise<void> 
 
 async function handleFailure(deal: Deal, result: PipelineResult): Promise<void> {
   console.log(
-    `[pipeline] Deal ${deal.id} failed — ${result.abortCode}: ${result.abortReason}`
+    "[pipeline] Deal " + deal.id + " failed — " + result.abortCode + ": " + result.abortReason
   );
 
   await updateDealStatus(deal.id, "aborted_not_charged");
@@ -346,7 +343,7 @@ async function handleFailure(deal: Deal, result: PipelineResult): Promise<void> 
     try {
       await deliverQualityGateReport(deal, result.qualityGate);
     } catch (err) {
-      console.error(`[pipeline] Failed to deliver quality gate report for deal ${deal.id}:`, err);
+      console.error("[pipeline] Failed to deliver quality gate report for deal " + deal.id + ":", err);
     }
   }
 
@@ -357,9 +354,6 @@ async function handleFailure(deal: Deal, result: PipelineResult): Promise<void> 
       abortCode: result.abortCode,
     });
   }
-
-  // TODO: Send failure notification email to user
-  // For now, logged. Email template TBD.
 }
 
 // ---------------------------------------------------------------------------
@@ -370,40 +364,47 @@ async function deliverQualityGateReport(
   deal: Deal,
   qualityGate: Record<string, unknown>
 ): Promise<void> {
-  const synopsis = [
-    `# CIMScan Quality Gate Report`,
-    ``,
-    `**Deal:** ${deal.deal_name}`,
-    `**Claim Depth:** ${deal.claim_depth}`,
-    `**Gate Decision:** FAIL`,
-    `**Quality Score:** ${qualityGate.quality_score}`,
-    ``,
-    `## Dimension Scores`,
-    ``,
-    `| Dimension | Score |`,
-    `|-----------|-------|`,
-    `| Financial Data Density | ${qualityGate.financial_data_density} |`,
-    `| Customer & Concentration Data | ${qualityGate.customer_concentration_data} |`,
-    `| Operational & Structural Detail | ${qualityGate.operational_structural_detail} |`,
-    `| Growth & Pipeline Substantiation | ${qualityGate.growth_pipeline_substantiation} |`,
-    `| Risk & Compliance Disclosure | ${qualityGate.risk_compliance_disclosure} |`,
-    ``,
-    `## Quality Notes`,
-    ``,
-    qualityGate.quality_notes || "N/A",
-    ``,
-    `## Data Gaps Identified`,
-    ``,
-    ...(Array.isArray(qualityGate.data_gaps_identified)
-      ? (qualityGate.data_gaps_identified as string[]).map((gap) => `- ${gap}`)
-      : ["N/A"]),
-    ``,
-    `---`,
-    `*This CIM did not meet the minimum data quality threshold for structured analysis. ` +
-      `No charges have been applied.*`,
-  ].join("\n");
+  const lines = [
+    "# CIMScan Quality Gate Report",
+    "",
+    "**Deal:** " + deal.deal_name,
+    "**Claim Depth:** " + deal.claim_depth,
+    "**Gate Decision:** FAIL",
+    "**Quality Score:** " + qualityGate.quality_score,
+    "",
+    "## Dimension Scores",
+    "",
+    "| Dimension | Score |",
+    "|-----------|-------|",
+    "| Financial Data Density | " + qualityGate.financial_data_density + " |",
+    "| Customer & Concentration Data | " + qualityGate.customer_concentration_data + " |",
+    "| Operational & Structural Detail | " + qualityGate.operational_structural_detail + " |",
+    "| Growth & Pipeline Substantiation | " + qualityGate.growth_pipeline_substantiation + " |",
+    "| Risk & Compliance Disclosure | " + qualityGate.risk_compliance_disclosure + " |",
+    "",
+    "## Quality Notes",
+    "",
+    String(qualityGate.quality_notes || "N/A"),
+    "",
+    "## Data Gaps Identified",
+    "",
+  ];
 
-  const storagePath = `outputs/${deal.id}/quality-gate-report.md`;
+  if (Array.isArray(qualityGate.data_gaps_identified)) {
+    (qualityGate.data_gaps_identified as string[]).forEach(function(gap) {
+      lines.push("- " + gap);
+    });
+  } else {
+    lines.push("N/A");
+  }
+
+  lines.push("");
+  lines.push("---");
+  lines.push("*This CIM did not meet the minimum data quality threshold for structured analysis. No charges have been applied.*");
+
+  const synopsis = lines.join("\n");
+
+  const storagePath = "outputs/" + deal.id + "/quality-gate-report.md";
   const { error } = await supabase.storage
     .from("outputs")
     .upload(storagePath, Buffer.from(synopsis, "utf-8"), {
@@ -412,10 +413,10 @@ async function deliverQualityGateReport(
     });
 
   if (error) {
-    throw new Error(`Failed to upload quality gate report: ${error.message}`);
+    throw new Error("Failed to upload quality gate report: " + error.message);
   }
 
-  console.log(`[pipeline] Quality gate report uploaded for deal ${deal.id}`);
+  console.log("[pipeline] Quality gate report uploaded for deal " + deal.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +434,7 @@ async function fetchDeal(dealId: string): Promise<Deal> {
     .single();
 
   if (error || !data) {
-    throw new Error(`Deal not found: ${dealId} — ${error?.message}`);
+    throw new Error("Deal not found: " + dealId + " — " + (error?.message || ""));
   }
 
   return data as unknown as Deal;
@@ -446,7 +447,7 @@ async function updateDealStatus(dealId: string, status: string): Promise<void> {
     .eq("id", dealId);
 
   if (error) {
-    console.error(`[pipeline] Failed to update deal ${dealId} status to ${status}:`, error);
+    console.error("[pipeline] Failed to update deal " + dealId + " status to " + status + ":", error);
   }
 }
 
@@ -464,7 +465,7 @@ async function recordAbort(
     .eq("id", dealId);
 
   if (error) {
-    console.error(`[pipeline] Failed to record abort for deal ${dealId}:`, error);
+    console.error("[pipeline] Failed to record abort for deal " + dealId + ":", error);
   }
 }
 
@@ -478,7 +479,7 @@ async function clearAbort(dealId: string): Promise<void> {
     .eq("id", dealId);
 
   if (error) {
-    console.error(`[pipeline] Failed to clear abort for deal ${dealId}:`, error);
+    console.error("[pipeline] Failed to clear abort for deal " + dealId + ":", error);
   }
 }
 
@@ -492,7 +493,7 @@ async function downloadCim(storagePath: string): Promise<Buffer> {
     .download(storagePath);
 
   if (error || !data) {
-    throw new Error(`CIM download failed: ${error?.message}`);
+    throw new Error("CIM download failed: " + (error?.message || ""));
   }
 
   const arrayBuffer = await data.arrayBuffer();
@@ -534,20 +535,27 @@ function extractStage(
   data: Record<string, unknown>,
   stageNum: number
 ): Record<string, unknown> | undefined {
-  const keys = [`stage_${stageNum}`, `stage${stageNum}`];
-  for (const key of keys) {
+  // Direct stage key: "stage_2", "stage2", etc.
+  var keys = ["stage_" + stageNum, "stage" + stageNum];
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
     if (data[key] && typeof data[key] === "object") {
       return data[key] as Record<string, unknown>;
     }
   }
 
+  // Nested in a "stages" array
   if (Array.isArray(data.stages)) {
-    const stage = (data.stages as Record<string, unknown>[]).find(
-      (s) => s.stage === stageNum || s.stage_number === stageNum
-    );
-    if (stage) return stage;
+    var stages = data.stages as Record<string, unknown>[];
+    for (var j = 0; j < stages.length; j++) {
+      var s = stages[j];
+      if (s.stage === stageNum || s.stage_number === stageNum) {
+        return s;
+      }
+    }
   }
 
+  // The data might be flat (all stage outputs at top level)
   if (stageNum === 2 && data.gates) return data as Record<string, unknown>;
   if (stageNum === 3 && data.tasks) return data as Record<string, unknown>;
   if (stageNum === 4 && data.matrix_pairs) return data as Record<string, unknown>;

@@ -1,15 +1,13 @@
 import { Router, Request, Response } from "express";
 import { supabase } from "../lib/supabase.js";
 import { createPaymentAuth } from "../services/payment.js";
+import { validatePromoCode, redeemPromoCode } from "../services/promo.js";
 import { PRICING, ClaimDepth } from "../lib/stripe.js";
 
 export const dealsRouter = Router();
 
 /**
  * GET /api/deals/:id
- *
- * Returns deal info for the configuration page.
- * No auth required — the deal ID is a UUID that acts as a capability URL.
  */
 dealsRouter.get("/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -26,7 +24,6 @@ dealsRouter.get("/:id", async (req: Request, res: Response) => {
     return;
   }
 
-  // Get firm name
   const { data: firm } = await supabase
     .from("firms")
     .select("name")
@@ -52,14 +49,15 @@ dealsRouter.get("/:id", async (req: Request, res: Response) => {
 /**
  * POST /api/deals/:id/configure
  *
- * Accepts terms, sets claim depth, authorizes payment via Stripe.
- * Card is authorized but NOT charged until pipeline completes.
+ * Accepts terms, sets claim depth, then either:
+ *   A) Authorizes payment via Stripe (payment_method_id provided)
+ *   B) Redeems a promo code (promo_code provided, no payment)
  *
- * Body: { claim_depth: "CORE" | "FULL", terms_accepted: true, payment_method_id: string }
+ * Body: { claim_depth, terms_accepted, payment_method_id?, promo_code? }
  */
 dealsRouter.post("/:id/configure", async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { claim_depth, terms_accepted, payment_method_id } = req.body;
+  const { claim_depth, terms_accepted, payment_method_id, promo_code } = req.body;
 
   // --- Validate inputs ---
   if (!terms_accepted) {
@@ -72,8 +70,9 @@ dealsRouter.post("/:id/configure", async (req: Request, res: Response) => {
     return;
   }
 
-  if (!payment_method_id) {
-    res.status(400).json({ error: "payment_method_id is required" });
+  // Must provide either payment method or promo code
+  if (!payment_method_id && !promo_code) {
+    res.status(400).json({ error: "payment_method_id or promo_code is required" });
     return;
   }
 
@@ -99,7 +98,48 @@ dealsRouter.post("/:id/configure", async (req: Request, res: Response) => {
     return;
   }
 
-  // --- Accept terms first ---
+  // --- PROMO CODE PATH ---
+  if (promo_code) {
+    const validation = await validatePromoCode(promo_code, deal.firm_id, claim_depth as "CORE" | "FULL");
+
+    if (!validation.valid) {
+      res.status(400).json({ error: validation.reason });
+      return;
+    }
+
+    try {
+      // Accept terms + configure deal with $0
+      await supabase
+        .from("deals")
+        .update({
+          terms_accepted_at: new Date().toISOString(),
+          claim_depth,
+          status: "pipeline_queued",
+          payment_amount_cents: 0,
+        })
+        .eq("id", id);
+
+      // Redeem the code
+      await redeemPromoCode(validation.promoCode.id, id);
+
+      console.log(`[deals] Deal ${id} configured via promo code ${promo_code}: ${claim_depth}, $0`);
+
+      res.json({
+        deal_id: id,
+        claim_depth,
+        status: "pipeline_queued",
+        amount: 0,
+        promo_applied: true,
+      });
+    } catch (err) {
+      console.error("[deals] Promo redemption error:", err);
+      res.status(500).json({ error: "Failed to apply promo code" });
+    }
+    return;
+  }
+
+  // --- STRIPE PAYMENT PATH ---
+  // Accept terms first
   const { error: termsError } = await supabase
     .from("deals")
     .update({
@@ -113,14 +153,13 @@ dealsRouter.post("/:id/configure", async (req: Request, res: Response) => {
     return;
   }
 
-  // --- Look up firm for Stripe customer ID ---
+  // Look up firm for Stripe customer ID
   const { data: firm } = await supabase
     .from("firms")
     .select("stripe_customer_id")
     .eq("id", deal.firm_id)
     .single();
 
-  // --- Create PaymentIntent (auth only, no capture) ---
   try {
     const { paymentIntent, clientSecret } = await createPaymentAuth(
       id,

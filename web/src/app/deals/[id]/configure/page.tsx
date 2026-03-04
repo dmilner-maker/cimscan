@@ -28,19 +28,14 @@ interface DealInfo {
   terms_accepted_at: string | null;
   firm_name: string;
   created_at: string;
-  pricing: {
-    CORE: number;
-    FULL: number;
-  };
+  pricing: { CORE: number; FULL: number };
 }
 
 type ClaimDepth = "CORE" | "FULL";
 
 function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(0)}`;
+  return "$" + (cents / 100).toFixed(0);
 }
-
-// ─── Inner form component (needs Stripe context) ───────────────────
 
 function ConfigureForm() {
   const params = useParams();
@@ -51,25 +46,24 @@ function ConfigureForm() {
   const [deal, setDeal] = useState<DealInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
   const [claimDepth, setClaimDepth] = useState<ClaimDepth>("CORE");
   const [hasScrolledToBottom, setHasScrolledToBottom] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [cardComplete, setCardComplete] = useState(false);
-
+  const [promoCode, setPromoCode] = useState("");
+  const [usePromo, setUsePromo] = useState(false);
+  const [promoApplied, setPromoApplied] = useState(false);
   const termsRef = useRef<HTMLDivElement>(null);
 
-  // --- Fetch deal info ---
   useEffect(() => {
     async function fetchDeal() {
       try {
-        const res = await fetch(`${API_URL}/api/deals/${dealId}`);
+        const res = await fetch(API_URL + "/api/deals/" + dealId);
         if (!res.ok) throw new Error("Deal not found");
         const data = await res.json();
         setDeal(data);
-
         if (data.terms_accepted_at) {
           setSubmitted(true);
           setClaimDepth(data.claim_depth ?? "CORE");
@@ -83,7 +77,6 @@ function ConfigureForm() {
     fetchDeal();
   }, [dealId]);
 
-  // --- Scroll detection for terms ---
   const handleTermsScroll = useCallback(() => {
     const el = termsRef.current;
     if (!el) return;
@@ -91,45 +84,47 @@ function ConfigureForm() {
     if (atBottom) setHasScrolledToBottom(true);
   }, []);
 
-  // --- Submit configuration + payment ---
   async function handleSubmit() {
-    if (!termsAccepted || !cardComplete || submitting || !stripe || !elements)
-      return;
+    if (!termsAccepted || submitting) return;
+    if (usePromo && !promoCode.trim()) return;
+    if (!usePromo && (!cardComplete || !stripe || !elements)) return;
 
     setSubmitting(true);
     setError(null);
 
     try {
-      // 1. Create PaymentMethod from card input
-      const cardElement = elements.getElement(CardElement);
-      if (!cardElement) throw new Error("Card element not found");
+      const body: Record<string, unknown> = {
+        claim_depth: claimDepth,
+        terms_accepted: true,
+      };
 
-      const { error: stripeError, paymentMethod } =
-        await stripe.createPaymentMethod({
-          type: "card",
-          card: cardElement,
-        });
-
-      if (stripeError) {
-        throw new Error(stripeError.message ?? "Card error");
+      if (usePromo) {
+        body.promo_code = promoCode.trim();
+      } else {
+        const cardElement = elements!.getElement(CardElement);
+        if (!cardElement) throw new Error("Card element not found");
+        const { error: stripeError, paymentMethod } =
+          await stripe!.createPaymentMethod({ type: "card", card: cardElement });
+        if (stripeError) throw new Error(stripeError.message ?? "Card error");
+        body.payment_method_id = paymentMethod.id;
       }
 
-      // 2. Send to API — creates PaymentIntent with auth/capture
-      const res = await fetch(`${API_URL}/api/deals/${dealId}/configure`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          claim_depth: claimDepth,
-          terms_accepted: true,
-          payment_method_id: paymentMethod.id,
-        }),
-      });
+      const res = await fetch(
+        API_URL + "/api/deals/" + dealId + "/configure",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      );
 
       if (!res.ok) {
-        const body = await res.json();
-        throw new Error(body.error ?? "Configuration failed");
+        const data = await res.json();
+        throw new Error(data.error ?? "Configuration failed");
       }
 
+      const result = await res.json();
+      if (result.promo_applied) setPromoApplied(true);
       setSubmitted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Configuration failed");
@@ -138,7 +133,6 @@ function ConfigureForm() {
     }
   }
 
-  // --- Loading state ---
   if (loading) {
     return (
       <main className="min-h-screen bg-zinc-50 flex items-center justify-center">
@@ -147,7 +141,6 @@ function ConfigureForm() {
     );
   }
 
-  // --- Error state ---
   if (error && !deal) {
     return (
       <main className="min-h-screen bg-zinc-50 flex items-center justify-center">
@@ -161,7 +154,6 @@ function ConfigureForm() {
     );
   }
 
-  // --- Already configured / payment authorized state ---
   if (submitted) {
     return (
       <main className="min-h-screen bg-zinc-50 flex items-center justify-center p-6">
@@ -182,20 +174,27 @@ function ConfigureForm() {
             </svg>
           </div>
           <h1 className="text-lg font-semibold text-zinc-900 mb-2">
-            Payment Authorized
+            {promoApplied ? "Analysis Queued" : "Payment Authorized"}
           </h1>
           <p className="text-sm text-zinc-500 mb-4">
             <strong>{deal?.deal_name}</strong> has been configured for{" "}
             <strong>{claimDepth}</strong> analysis.
           </p>
           <p className="text-sm text-zinc-400">
-            Your card has been authorized for{" "}
-            <strong>
-              {deal?.pricing
-                ? formatCents(deal.pricing[claimDepth])
-                : claimDepth}
-            </strong>
-            . You will only be charged if the analysis completes successfully.
+            {promoApplied ? (
+              <>Your promo code has been applied. Analysis will begin shortly.</>
+            ) : (
+              <>
+                Your card has been authorized for{" "}
+                <strong>
+                  {deal?.pricing
+                    ? formatCents(deal.pricing[claimDepth])
+                    : claimDepth}
+                </strong>
+                . You will only be charged if the analysis completes
+                successfully.
+              </>
+            )}
           </p>
         </div>
       </main>
@@ -205,7 +204,6 @@ function ConfigureForm() {
   return (
     <main className="min-h-screen bg-zinc-50 py-12 px-6">
       <div className="max-w-2xl mx-auto space-y-8">
-        {/* Header */}
         <div>
           <p className="text-sm font-medium text-zinc-400 tracking-wide uppercase mb-1">
             CIMScan
@@ -215,7 +213,6 @@ function ConfigureForm() {
           </h1>
         </div>
 
-        {/* Deal Info Card */}
         <div className="bg-white rounded-lg border border-zinc-200 p-6">
           <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide mb-4">
             Deal Details
@@ -238,7 +235,6 @@ function ConfigureForm() {
           </dl>
         </div>
 
-        {/* Analysis Depth Selector */}
         <div className="bg-white rounded-lg border border-zinc-200 p-6">
           <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide mb-4">
             Analysis Depth
@@ -247,11 +243,12 @@ function ConfigureForm() {
             <button
               type="button"
               onClick={() => setClaimDepth("CORE")}
-              className={`text-left p-4 rounded-lg border-2 transition-colors ${
-                claimDepth === "CORE"
+              className={
+                "text-left p-4 rounded-lg border-2 transition-colors " +
+                (claimDepth === "CORE"
                   ? "border-zinc-900 bg-zinc-50"
-                  : "border-zinc-200 hover:border-zinc-300"
-              }`}
+                  : "border-zinc-200 hover:border-zinc-300")
+              }
             >
               <div className="flex items-baseline justify-between mb-1">
                 <p className="text-sm font-semibold text-zinc-900">CORE</p>
@@ -260,18 +257,19 @@ function ConfigureForm() {
                 </p>
               </div>
               <p className="text-xs text-zinc-500 mt-1">
-                20–30 IC-material claims. Full underwriting-surface coverage.
+                20-30 IC-material claims. Full underwriting-surface coverage.
                 Standard diligence scope.
               </p>
             </button>
             <button
               type="button"
               onClick={() => setClaimDepth("FULL")}
-              className={`text-left p-4 rounded-lg border-2 transition-colors ${
-                claimDepth === "FULL"
+              className={
+                "text-left p-4 rounded-lg border-2 transition-colors " +
+                (claimDepth === "FULL"
                   ? "border-zinc-900 bg-zinc-50"
-                  : "border-zinc-200 hover:border-zinc-300"
-              }`}
+                  : "border-zinc-200 hover:border-zinc-300")
+              }
             >
               <div className="flex items-baseline justify-between mb-1">
                 <p className="text-sm font-semibold text-zinc-900">FULL</p>
@@ -280,14 +278,13 @@ function ConfigureForm() {
                 </p>
               </div>
               <p className="text-xs text-zinc-500 mt-1">
-                45–60 claims with expanded recall. Second-order operational and
+                45-60 claims with expanded recall. Second-order operational and
                 diligence-relevant claims included.
               </p>
             </button>
           </div>
         </div>
 
-        {/* Terms of Use */}
         <div className="bg-white rounded-lg border border-zinc-200 p-6">
           <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide mb-4">
             Terms of Use
@@ -298,7 +295,7 @@ function ConfigureForm() {
             className="h-64 overflow-y-auto border border-zinc-200 rounded-lg p-4 text-xs text-zinc-600 leading-relaxed bg-zinc-50"
           >
             <p className="font-semibold text-zinc-900 mb-3">
-              CIMScan Terms of Use — True Bearing LLC
+              CIMScan Terms of Use - True Bearing LLC
             </p>
             <p className="mb-3">
               By configuring and submitting a Confidential Information Memorandum
@@ -310,11 +307,11 @@ function ConfigureForm() {
             </p>
             <p className="mb-3">
               CIMScan outputs are structured starting points for diligence
-              preparation, not investment advice, risk assessments, or transaction
-              recommendations. All claims, gate conditions, thresholds, and
-              workplan elements are AI-generated and require independent
-              validation by qualified professionals before use in any investment
-              decision.
+              preparation, not investment advice, risk assessments, or
+              transaction recommendations. All claims, gate conditions,
+              thresholds, and workplan elements are AI-generated and require
+              independent validation by qualified professionals before use in any
+              investment decision.
             </p>
             <p className="font-semibold text-zinc-800 mb-2">
               2. No Replacement of Professional Judgment
@@ -382,22 +379,21 @@ function ConfigureForm() {
               of laws provisions.
             </p>
             <p className="mt-4 text-zinc-400 text-center">
-              — End of Terms —
+              - End of Terms -
             </p>
           </div>
-
           {!hasScrolledToBottom && (
             <p className="text-xs text-zinc-400 mt-2 text-center">
               Scroll to the bottom of the terms to enable acceptance.
             </p>
           )}
-
           <label
-            className={`flex items-start gap-3 mt-4 ${
-              !hasScrolledToBottom
+            className={
+              "flex items-start gap-3 mt-4 " +
+              (!hasScrolledToBottom
                 ? "opacity-50 cursor-not-allowed"
-                : "cursor-pointer"
-            }`}
+                : "cursor-pointer")
+            }
           >
             <input
               type="checkbox"
@@ -412,64 +408,102 @@ function ConfigureForm() {
           </label>
         </div>
 
-        {/* Payment */}
         <div className="bg-white rounded-lg border border-zinc-200 p-6">
-          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide mb-4">
-            Payment
-          </h2>
-          <p className="text-sm text-zinc-500 mb-4">
-            Your card will be authorized for{" "}
-            <strong className="text-zinc-900">
-              {deal?.pricing ? formatCents(deal.pricing[claimDepth]) : "—"}
-            </strong>
-            . You are only charged if the analysis completes successfully.
-          </p>
-          <div className="border border-zinc-200 rounded-lg p-4 bg-zinc-50">
-            <CardElement
-              options={{
-                style: {
-                  base: {
-                    fontSize: "14px",
-                    color: "#18181b",
-                    "::placeholder": { color: "#a1a1aa" },
-                  },
-                  invalid: { color: "#dc2626" },
-                },
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide">
+              Payment
+            </h2>
+            <button
+              type="button"
+              onClick={() => {
+                setUsePromo(!usePromo);
+                setError(null);
               }}
-              onChange={(e) => setCardComplete(e.complete)}
-            />
+              className="text-xs text-zinc-500 hover:text-zinc-900 underline"
+            >
+              {usePromo ? "Pay with card instead" : "Have a promo code?"}
+            </button>
           </div>
+
+          {usePromo ? (
+            <>
+              <p className="text-sm text-zinc-500 mb-4">
+                Enter your promo code to start analysis at no charge.
+              </p>
+              <input
+                type="text"
+                value={promoCode}
+                onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+                placeholder="CIMS-XXXX-XXXX"
+                className="w-full border border-zinc-200 rounded-lg px-4 py-3 text-sm text-zinc-900 bg-zinc-50 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent"
+              />
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-zinc-500 mb-4">
+                Your card will be authorized for{" "}
+                <strong className="text-zinc-900">
+                  {deal?.pricing
+                    ? formatCents(deal.pricing[claimDepth])
+                    : "-"}
+                </strong>
+                . You are only charged if the analysis completes successfully.
+              </p>
+              <div className="border border-zinc-200 rounded-lg p-4 bg-zinc-50">
+                <CardElement
+                  options={{
+                    style: {
+                      base: {
+                        fontSize: "14px",
+                        color: "#18181b",
+                        "::placeholder": { color: "#a1a1aa" },
+                      },
+                      invalid: { color: "#dc2626" },
+                    },
+                  }}
+                  onChange={(e) => setCardComplete(e.complete)}
+                />
+              </div>
+            </>
+          )}
         </div>
 
-        {/* Error */}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4">
             <p className="text-sm text-red-700">{error}</p>
           </div>
         )}
 
-        {/* Submit */}
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={!termsAccepted || !cardComplete || submitting || !stripe}
+          disabled={
+            !termsAccepted ||
+            submitting ||
+            (usePromo ? !promoCode.trim() : !cardComplete || !stripe)
+          }
           className="w-full py-3 px-6 rounded-lg text-sm font-semibold text-white bg-zinc-900 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {submitting
-            ? "Authorizing payment..."
-            : `Authorize ${deal?.pricing ? formatCents(deal.pricing[claimDepth]) : ""} & Start ${claimDepth} Analysis`}
+            ? usePromo
+              ? "Applying promo code..."
+              : "Authorizing payment..."
+            : usePromo
+              ? "Start " + claimDepth + " Analysis (Promo)"
+              : "Authorize " +
+                (deal?.pricing ? formatCents(deal.pricing[claimDepth]) : "") +
+                " & Start " +
+                claimDepth +
+                " Analysis"}
         </button>
 
-        {/* Footer */}
         <p className="text-center text-xs text-zinc-400">
-          CIMScan by True Bearing LLC · IC Sentinel
+          CIMScan by True Bearing LLC
         </p>
       </div>
     </main>
   );
 }
-
-// ─── Wrapper with Stripe Elements provider ─────────────────────────
 
 export default function ConfigurePage() {
   return (

@@ -429,7 +429,7 @@ function autoWidth(ws: ExcelJS.Worksheet): void {
 async function buildIcInsights(deal: Deal, result: PipelineResult): Promise<Buffer> {
   var ic = result.icInsights || {};
 
-  var sections: Paragraph[] = [];
+  var sections: (Paragraph | Table)[] = [];
 
   // ---- Target ----
   sections.push(

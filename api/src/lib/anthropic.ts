@@ -6,11 +6,12 @@
  * spec, matching how manual chat runs operate.
  *
  * Token budget per stage is tuned to allow full output:
- *   Pass 1 (CIM + Quality Gate + Claims): 16K
+ *   Pass 1 (CIM + Quality Gate + Claims): 24K
  *   Stage 2 (Underwriting Gates): 16K
  *   Stage 3 (Workstream Execution): 16K
- *   Stage 4 (Interdependency Analysis — largest output): 24K
- *   Stage 5 + Insights (Thesis Pillars + IC Insights): 16K
+ *   Stage 4 (Interdependency Analysis — largest output): 32K
+ *   Stage 5 (Thesis Pillars): 16K
+ *   IC Insights (Narrative synthesis): 16K
  */
 
 import fs from "node:fs";
@@ -165,6 +166,10 @@ export async function executePass1(
         "push to 25+ claims by mining all underwriting surfaces thoroughly. " +
         "Ensure each surface has multiple claims covering different angles. " +
         "Include claim_text, source_excerpt, and all schema fields for every claim.\n\n" +
+        "CRITICAL: You MUST return a non-empty claims array. A response with 0 claims is invalid — " +
+        "every CIM that passes the Quality Gate contains extractable claims. If you are uncertain about a claim, " +
+        "include it with a lower claim_priority_score rather than omitting it. " +
+        "Do NOT return an empty claims array under any circumstances when the Quality Gate passes.\n\n" +
         runCommand,
     },
   ];

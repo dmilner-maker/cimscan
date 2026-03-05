@@ -195,6 +195,17 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
     ", tokens: " + pass1.inputTokens + "/" + pass1.outputTokens
   );
 
+  // Guard: 0 claims is a known intermittent failure — retryable
+  if (claimCount === 0) {
+    return {
+      success: false,
+      abortCode: "PIPELINE_ERR_011",
+      abortReason: "Pass 1 returned 0 claims (known intermittent issue — retry typically succeeds)",
+      qualityGate: qualityGate,
+      stage1: pass1Data,
+    };
+  }
+
   // ==== STAGE 2: Underwriting Gates ====
 
   console.log("[pipeline] Running Stage 2 (Underwriting Gates)");

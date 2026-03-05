@@ -20,6 +20,10 @@ import {
   Paragraph,
   TextRun,
   HeadingLevel,
+  Table,
+  TableRow,
+  TableCell,
+  WidthType,
 } from "docx";
 
 // ---------------------------------------------------------------------------
@@ -423,136 +427,88 @@ function autoWidth(ws: ExcelJS.Worksheet): void {
 // ===========================================================================
 
 async function buildIcInsights(deal: Deal, result: PipelineResult): Promise<Buffer> {
-  var qg = result.qualityGate || {};
-  var claims = (getArray(result.stage1, "claims"))
-    .sort(function(a, b) { return Number(b.claim_priority_score ?? 0) - Number(a.claim_priority_score ?? 0); });
-  var gates = getArray(result.stage2, "gates");
-  var tasks = getArray(result.stage3, "tasks");
-  if (tasks.length === 0) tasks = getArray(result.stage3, "artifact_rows");
-  var killHubs = getArray(result.stage4, "top_5_kill_hubs");
-  var pillars = getArray(result.stage5, "pillars");
+  var ic = result.icInsights || {};
 
   var sections: Paragraph[] = [];
 
-  // ---- Section 1: Cover Page ----
+  // ---- Target ----
   sections.push(
-    heading("IC Insights", HeadingLevel.TITLE),
-    para("Deal: " + deal.deal_name),
-    para("EC-CIM Version: 1.7.0"),
-    para("Claim Depth: " + deal.claim_depth),
-    para("Run Timestamp: " + new Date().toISOString()),
-    para("CIM Quality Gate: " + (qg.gate_decision || "N/A") + " (Score: " + (qg.quality_score || "N/A") + ")"),
+    heading("Target: " + (ic.company_name || deal.deal_name), HeadingLevel.HEADING_1),
     para("")
   );
 
-  // ---- Section 2: Executive Summary ----
-  sections.push(heading("Executive Summary", HeadingLevel.HEADING_1));
+  // ---- Management Table ----
+  sections.push(heading("Management", HeadingLevel.HEADING_1));
   sections.push(
-    para(
-      "The analysis surfaces " + claims.length + " claims across " +
-      (deal.claim_depth === "CORE" ? "5" : "6+") + " underwriting surfaces. " +
-      killHubs.length + " hub claims identified with potential cascade risk. " +
-      pillars.length + " thesis pillars constructed with STRICT coupling surface."
-    )
+    makeTable([
+      ["CEO", String(ic.ceo || "Not disclosed in CIM")],
+      ["CFO", String(ic.cfo || "Not disclosed in CIM")],
+    ])
   );
-  if (qg.gate_decision === "CONDITIONAL_PASS") {
-    sections.push(
-      para(
-        "Note: CIM Quality Gate returned CONDITIONAL PASS (score: " + qg.quality_score + "). " +
-        "Outputs may be constrained by source data limitations."
-      )
-    );
-  }
+  sections.push(para(""));
 
-  // ---- Section 3: Top 8 Claims ----
-  sections.push(heading("Investment Thesis Claims — Top 8", HeadingLevel.HEADING_1));
-  var top8 = claims.slice(0, 8);
-  for (var i = 0; i < top8.length; i++) {
-    var claim = top8[i];
-    var isAbsence = claim.claim_type === "Absence Claim";
-    sections.push(
-      heading(
-        String(claim.claim_id) + (isAbsence ? " [ABSENCE CLAIM]" : ""),
-        HeadingLevel.HEADING_2
-      ),
-      para(String(claim.claim_text || "")),
-      para("Category: " + (claim.claim_category || "N/A")),
-      para("Mechanism: " + (claim.mechanism_of_value || "N/A")),
-      para("Economic Driver: " + (claim.economic_driver || "N/A")),
-      para("KPI: " + (claim.kpi_to_validate || "N/A")),
-      para("Priority Score: " + (claim.claim_priority_score || "N/A")),
-      para("")
-    );
-  }
-
-  // ---- Section 4: Underwriting Gates ----
-  sections.push(heading("Underwriting Gates & Kill Thresholds", HeadingLevel.HEADING_1));
-  for (var i = 0; i < Math.min(gates.length, 15); i++) {
-    var gate = gates[i];
-    sections.push(
-      para(
-        String(gate.claim_id) + ": " + String(gate.underwriting_gate || "") + " — " +
-        "Kill: " + String(gate.kill_threshold || "N/A") + " — " +
-        "Downside: " + String(gate.downside_case_if_false || "N/A")
-      )
-    );
-  }
-
-  // ---- Section 5: Top 5 IC Kill Risks ----
-  sections.push(heading("Top 5 IC Kill Risks", HeadingLevel.HEADING_1));
-  for (var i = 0; i < killHubs.length; i++) {
-    var hub = killHubs[i];
-    sections.push(
-      heading("#" + (hub.rank || (i + 1)) + " — " + hub.claim_id + " (" + (hub.hub_tag || "") + ")", HeadingLevel.HEADING_2),
-      para("Blast Radius: " + (hub.blast_radius || "N/A")),
-      para("IC Gating Rationale: " + (hub.ic_gating_rationale || "N/A")),
-      para("")
-    );
-  }
-
-  // ---- Section 6: Diligence Workplan ----
-  sections.push(heading("Diligence Workplan", HeadingLevel.HEADING_1));
-  var taskCounts: Record<string, number> = {};
-  for (var i = 0; i < tasks.length; i++) {
-    var taskType = String(tasks[i].diligence_task_type || tasks[i].task_type || "Other");
-    taskCounts[taskType] = (taskCounts[taskType] || 0) + 1;
-  }
+  // ---- Financial Stats Table ----
+  sections.push(heading("Financial Stats for Current Year", HeadingLevel.HEADING_1));
   sections.push(
-    para("Total tasks: " + tasks.length),
-    para("Distribution: " + Object.entries(taskCounts).map(function(e) { return e[0] + " (" + e[1] + ")"; }).join(", ")),
-    para("")
+    makeTable([
+      ["Revenue", String(ic.projected_revenue || "Not disclosed")],
+      ["Gross Profit", String(ic.projected_gross_profit || "Not disclosed")],
+      ["Operating Expense", String(ic.projected_op_ex || "Not disclosed")],
+      ["Net Income", String(ic.projected_net_income || "Not disclosed")],
+      ["Adjusted EBITDA", String(ic.adjusted_ebitda || "Not disclosed")],
+    ])
   );
+  sections.push(para(""));
 
-  // ---- Section 7: Thesis Pillars ----
-  sections.push(heading("Thesis Pillars with STRICT Coupling Surface", HeadingLevel.HEADING_1));
-  for (var i = 0; i < pillars.length; i++) {
-    var p = pillars[i];
-    sections.push(
-      heading(String(p.pillar_id || "") + ": " + String(p.pillar_name || ""), HeadingLevel.HEADING_2),
-      para("Thesis: " + (p.pillar_thesis || "N/A")),
-      para("Supporting Claims: " + formatArrayOrString(p.supporting_claim_ids)),
-      para("Key KPIs: " + formatArrayOrString(p.key_kpis)),
-      para("Kill Threshold: " + (p.kill_threshold || "N/A")),
-      para("Negative Coupling Trigger: " + (p.negative_coupling_trigger || "N/A")),
-      para("Collapse Path: " + (p.pillar_collapse_path_if_breached || "N/A")),
-      para("IC RED Condition: " + (p.ic_red_threshold_condition || "N/A")),
-      para("")
-    );
+  // ---- Operational Narrative ----
+  sections.push(heading("OPERATIONAL NARRATIVE", HeadingLevel.HEADING_1));
+  var opNarrative = String(ic.operational_narrative || "");
+  if (opNarrative) {
+    var opParagraphs = opNarrative.split("\n\n");
+    for (var i = 0; i < opParagraphs.length; i++) {
+      var text = opParagraphs[i].trim();
+      if (text) {
+        sections.push(para(text));
+        sections.push(para(""));
+      }
+    }
+  } else {
+    sections.push(para("IC Insights narrative not generated for this run."));
   }
 
-  // ---- Section 8: Appendix ----
-  sections.push(heading("Appendix: Full Claim Register", HeadingLevel.HEADING_1));
-  for (var i = 0; i < claims.length; i++) {
-    var c = claims[i];
-    sections.push(
-      para(
-        String(c.claim_id) + (c.claim_type === "Absence Claim" ? " [ABSENCE]" : "") + " | " +
-        String(c.claim_category || "") + " | Score: " + String(c.claim_priority_score || "") + " | " +
-        String(c.economic_driver || "") + " | " + String(c.claim_text || "")
-      )
-    );
+  // ---- What Breaks the Narrative ----
+  sections.push(heading("WHAT BREAKS THE NARRATIVE", HeadingLevel.HEADING_1));
+  var counterNarrative = String(ic.counter_narrative || "");
+  if (counterNarrative) {
+    var counterParagraphs = counterNarrative.split("\n\n");
+    for (var i = 0; i < counterParagraphs.length; i++) {
+      var text = counterParagraphs[i].trim();
+      if (text) {
+        sections.push(para(text));
+        sections.push(para(""));
+      }
+    }
+  } else {
+    sections.push(para("Counter-narrative not generated for this run."));
   }
 
+  // ---- Existential Threats ----
+  sections.push(heading("EXISTENTIAL THREATS (From Operational Claims)", HeadingLevel.HEADING_1));
+  var threats = String(ic.existential_threats || "");
+  if (threats) {
+    var threatParagraphs = threats.split("\n\n");
+    for (var i = 0; i < threatParagraphs.length; i++) {
+      var text = threatParagraphs[i].trim();
+      if (text) {
+        sections.push(para(text));
+        sections.push(para(""));
+      }
+    }
+  } else {
+    sections.push(para("Existential threats analysis not generated for this run."));
+  }
+
+  // ---- Footer ----
   sections.push(
     para(""),
     para("IC Insights v1.7.0 — True Bearing LLC / IC Sentinel / CIMScan"),
@@ -564,6 +520,31 @@ async function buildIcInsights(deal: Deal, result: PipelineResult): Promise<Buff
   });
 
   return await Packer.toBuffer(doc);
+}
+
+// ---------------------------------------------------------------------------
+// Table builder helper
+// ---------------------------------------------------------------------------
+
+function makeTable(rows: [string, string][]): Table {
+  var tableRows: TableRow[] = [];
+  for (var i = 0; i < rows.length; i++) {
+    tableRows.push(
+      new TableRow({
+        children: [
+          new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: rows[i][0], bold: true })] })],
+            width: { size: 3000, type: WidthType.DXA },
+          }),
+          new TableCell({
+            children: [new Paragraph({ children: [new TextRun(rows[i][1])] })],
+            width: { size: 6000, type: WidthType.DXA },
+          }),
+        ],
+      })
+    );
+  }
+  return new Table({ rows: tableRows });
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import {
   executeStage3,
   executeStage4,
   executeStage5,
+  executeIcInsights,
   PipelinePassResult,
 } from "../lib/anthropic.js";
 import { resolvePayment, shouldRetry } from "./payment.js";
@@ -351,6 +352,34 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
     ", tokens: " + stage5Result.inputTokens + "/" + stage5Result.outputTokens
   );
 
+  // Build full context for IC Insights
+  var context5 = Object.assign({}, context4, { stage_5: stage5Data });
+
+  // ==== IC INSIGHTS: Narrative synthesis ====
+
+  console.log("[pipeline] Running IC Insights (narrative synthesis)");
+  var icInsightsResult: PipelinePassResult;
+  try {
+    icInsightsResult = await executeIcInsights(context5, deal.claim_depth);
+    totalInput += icInsightsResult.inputTokens;
+    totalOutput += icInsightsResult.outputTokens;
+  } catch (err) {
+    // IC Insights failure is non-fatal — we still have all stage data
+    console.error("[pipeline] IC Insights API call failed (non-fatal): " + (err instanceof Error ? err.message : String(err)));
+    icInsightsResult = { rawText: "", json: null, inputTokens: 0, outputTokens: 0, stopReason: null, truncated: false };
+  }
+
+  var icInsightsData: Record<string, unknown> | null = null;
+  if (icInsightsResult.json) {
+    icInsightsData = icInsightsResult.json as Record<string, unknown>;
+    console.log(
+      "[pipeline] IC Insights complete — keys: " + Object.keys(icInsightsData).join(", ") +
+      ", tokens: " + icInsightsResult.inputTokens + "/" + icInsightsResult.outputTokens
+    );
+  } else {
+    console.warn("[pipeline] IC Insights returned no parseable JSON — will use fallback in output builder");
+  }
+
   // ---- Assemble result ----
   return {
     success: true,
@@ -360,7 +389,7 @@ async function runPipeline(deal: Deal): Promise<PipelineResult> {
     stage3: stage3Data,
     stage4: stage4Data,
     stage5: stage5Data,
-    icInsights: (stage5Data.ic_insights as Record<string, unknown>) || undefined,
+    icInsights: icInsightsData || undefined,
     synopsis: (stage5Data.synopsis as string) || (stage5Data.workstream_synopsis as string) || undefined,
     tokenUsage: { totalInput: totalInput, totalOutput: totalOutput },
   };

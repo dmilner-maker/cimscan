@@ -300,6 +300,68 @@ export async function executeStage5(
 }
 
 // ---------------------------------------------------------------------------
+// IC Insights: Narrative synthesis from full pipeline output
+// ---------------------------------------------------------------------------
+
+var IC_INSIGHTS_MAX_TOKENS = 16000;
+
+export async function executeIcInsights(
+  contextJson: Record<string, unknown>,
+  claimDepth: "CORE" | "FULL"
+): Promise<PipelinePassResult> {
+  var systemPrompt = loadSystemPrompt();
+
+  var userContent = [
+    {
+      type: "text",
+      text:
+        "Full Pipeline Output (Stages 1-5):\n\n" +
+        "```json\n" + JSON.stringify(contextJson, null, 2) + "\n```\n\n" +
+        "Generate an IC Insights briefing from the pipeline output above. " +
+        "Respond ONLY with a JSON object containing these exact fields.\n\n" +
+        "CRITICAL CONSTRAINT: All sections EXCEPT existential_threats must be strictly grounded in the pipeline output and CIM data. " +
+        "Do NOT introduce external data, industry benchmarks, or outside observations in any section other than existential_threats. " +
+        "The existential_threats section is the ONLY section where you may draw from knowledge outside the claim register.\n\n" +
+        "company_name: The target company name extracted from the CIM.\n\n" +
+        "ceo: CEO name if mentioned in the CIM, source excerpts, or claims. If not found, use \"Not disclosed in CIM\".\n\n" +
+        "cfo: CFO name if mentioned in the CIM, source excerpts, or claims. If not found, use \"Not disclosed in CIM\".\n\n" +
+        "projected_revenue: Current or projected year revenue as a formatted string (e.g. \"$44.5M\"). Use the most forward-looking figure available.\n\n" +
+        "projected_gross_profit: Current or projected year gross profit. Derive from revenue and gross margin claims if not stated directly. If not derivable, use \"Not disclosed\".\n\n" +
+        "projected_op_ex: Current or projected year operating expense. If not available, use \"Not disclosed\".\n\n" +
+        "projected_net_income: Current or projected year net income. If not available, use \"Not disclosed\".\n\n" +
+        "adjusted_ebitda: Current or projected year Adjusted EBITDA (e.g. \"$2.5M\").\n\n" +
+        "operational_narrative: Take the 5 thesis pillars and present them as an operational narrative. " +
+        "Write from the perspective of a sympathetic analyst who is pitching the positive points about the company to an investment committee. " +
+        "The tone should be confident but grounded — cite specific numbers, growth rates, margins, customer metrics, and competitive advantages from the claim register. " +
+        "Weave the 5 pillars into a coherent story about why this business is compelling. " +
+        "2-3 paragraphs. No bullet points — flowing prose.\n\n" +
+        "counter_narrative: Summarize what breaks the operational narrative. " +
+        "Write from the perspective of a skeptical private equity group partner sitting on the firm's investment committee. " +
+        "This partner has read the operational narrative and is now poking holes in it. " +
+        "Draw from the underwriting gates, kill thresholds, hub risk analysis, and cascade scenarios. " +
+        "Be specific — cite the exact conditions under which each thesis pillar collapses, the blast radius of key hubs, and the cascade consequences. " +
+        "The tone should be pointed and direct — this is a senior partner challenging the deal team. " +
+        "2-3 paragraphs. No bullet points — flowing prose.\n\n" +
+        "existential_threats: Identify the top 3 claims by blast_radius from the pipeline output. For each one:\n" +
+        "(a) State the claim and its blast radius.\n" +
+        "(b) Explain what breaks this claim based on the kill threshold and underwriting gate.\n" +
+        "(c) CRITICALLY: Draw well-founded perspective from OUTSIDE the boundaries of the claim register. " +
+        "Use your knowledge of industry dynamics, comparable company failures, market trends, regulatory patterns, and empirical data " +
+        "to provide insights and observations that go beyond what the CIM discloses. " +
+        "For example, if the claim involves customer concentration in a specific sector, cite relevant industry churn benchmarks. " +
+        "If the claim involves margin expansion, reference typical margin trajectories for comparable businesses. " +
+        "If the claim involves growth projections, reference base rates for companies at similar scale and stage. " +
+        "This section should feel like an IC partner who has deep domain expertise weighing in with context the CIM does not provide.\n" +
+        "Format as 3 numbered sections, each 1-2 paragraphs.\n\n" +
+        "IMPORTANT: Respond with valid JSON only. No markdown fences. No preamble. Just the JSON object with the fields above.",
+    },
+  ];
+
+  var response = await callAnthropic(systemPrompt, userContent, IC_INSIGHTS_MAX_TOKENS);
+  return parseResponse(response);
+}
+
+// ---------------------------------------------------------------------------
 // Response parser
 // ---------------------------------------------------------------------------
 

@@ -1,0 +1,164 @@
+================================================================================
+  RELEASE MANIFEST — EC-CIM v1.7.2
+  True Bearing LLC → IC Sentinel → CIMScan
+  Date: 2026-03-05
+================================================================================
+
+RELEASE TYPE:    Minor — Output Styling, Routing Architecture, Onboarding
+SUPERSEDES:      v1.7.1 (Release Manifest, Output Builder, Ingest Route)
+RELEASE FOCUS:   Professional Output Styling, FROM-Based Email Routing,
+                 Multi-User Architecture, Firm Onboarding, 0-Claim Fix
+
+================================================================================
+  DOCUMENT INVENTORY (14 files)
+================================================================================
+
+#   Filename                                         Format   Status
+--- ------------------------------------------------ -------- ------------------
+1   EC-CIM_System_Prompt_v1_7_0_Full_Reference.md    .md      UNCHANGED — Primary
+                                                               governing prompt
+
+2   EC-CIM_System_Prompt_v1_7_0_API_Payload.md       .md      DEPRECATED
+
+3   EC-CIM_Operator_Module_v1_7_0.docx               .docx    UNCHANGED
+
+4   EC-CIM_User_Guide_v1_7_1.md                      .md      UNCHANGED
+
+5   EC-CIM_Glossary_v1_7_0.docx                      .docx    UNCHANGED
+
+6   IC_Insights_Output_Spec_v1_7_1.md                 .md      UNCHANGED
+
+7   Dataset_D_Template_v1_7_0.xlsx                    .xlsx    UNCHANGED — Raw
+                                                               template. Post-
+                                                               processed by
+                                                               format_dataset_d.py.
+
+8   IC_Insights_Template.docx                         .docx    UPDATED — Generated
+                                                               by icInsightsBuilder.ts
+
+9   IC_Insights_Prompt_v1_0.md                        .md      UNCHANGED
+
+10  RELEASE_MANIFEST_v1_7_2.txt                       .txt     THIS FILE
+
+11  CIMScan_Final_Handoff_2026-03-05.md               .md      NEW — Handoff doc
+
+12  EC-CIM_Pipeline_Workflow_Primer_v1_6_0.docx       .docx    CARRIED
+
+13  CIMScan_Email_Ingestion_Routing_Spec_v1_0.md      .md      IMPLEMENTED
+
+14  Private_Equity_Export_2026_03_06.xlsx              .xlsx    NEW — 600-firm seed
+
+================================================================================
+  v1.7.2 CHANGELOG (from v1.7.1)
+================================================================================
+
+OUTPUT STYLING:
+
+  1. IC INSIGHTS PROFESSIONAL TEMPLATE
+     icInsightsBuilder.ts generates styled .docx with navy/gold palette.
+     Integrated into outputBuilder.ts with fallback to basic unstyled doc.
+
+  2. DATASET D POST-PROCESSOR (format_dataset_d.py)
+     Alternating rows, auto-filters, conditional formatting (blast radius,
+     priority scores, hub tags, gate status, Absence Claims), claim ID
+     hyperlinks back to Claim Register, branded README. Called via
+     child_process.execFileSync with graceful degradation.
+
+  3. OUTPUT BUILDER REWRITE (outputBuilder.ts)
+     IC Insights uses styled builder. Dataset D post-processed.
+     Files renamed: CIMScan_Diligence_File, CIMScan_Run_Summary.
+
+PIPELINE FIX:
+
+  4. 0-CLAIM DETECTION + AUTO-RETRY (PIPELINE_ERR_011)
+     pipeline.ts: guard after claimCount, returns retryable abort.
+     anthropic.ts: Pass 1 prompt hardened against empty claims.
+
+EMAIL ROUTING:
+
+  5. FROM-BASED ROUTING (ingest.ts rewrite)
+     Sender email is sole routing key. Message-ID dedup. Full validation
+     chain. Unknown sender rejection. Audit logging to inbound_emails.
+
+  6. MULTI-USER ARCHITECTURE (users table)
+     Multiple analysts per firm. RLS policies. deals.user_id linkage.
+
+  7. SIGNUP/ONBOARDING API (auth.ts)
+     GET /api/firms (searchable dropdown). POST /api/auth/signup with
+     existing firm selection or new firm creation + website validation.
+     Supabase Auth email verification.
+
+  8. 600 PE FIRMS SEEDED
+     806 rows deduplicated to 600 unique firms. Ingest addresses derived
+     from domain prefix. Zero collisions.
+
+================================================================================
+  FILE PLACEMENT MAP
+================================================================================
+
+  api/
+  ├── assets/
+  │   └── ec-cim-system-prompt-v1.7.0.md
+  ├── migrations/
+  │   ├── 2026-03-05_from_based_routing.sql
+  │   └── 2026-03-05_firms_seed.sql
+  ├── scripts/
+  │   └── format_dataset_d.py
+  ├── src/
+  │   ├── index.ts                    (UPDATED — auth router)
+  │   ├── lib/
+  │   │   ├── anthropic.ts            (UPDATED — prompt hardened)
+  │   │   ├── mailgun.ts
+  │   │   ├── stripe.ts
+  │   │   └── supabase.ts
+  │   ├── routes/
+  │   │   ├── admin.ts
+  │   │   ├── auth.ts                 (NEW)
+  │   │   ├── deals.ts
+  │   │   ├── health.ts
+  │   │   ├── ingest.ts               (REWRITTEN)
+  │   │   └── stripeWebhook.ts
+  │   └── services/
+  │       ├── delivery.ts
+  │       ├── icInsightsBuilder.ts     (NEW)
+  │       ├── outputBuilder.ts         (REWRITTEN)
+  │       ├── payment.ts
+  │       └── pipeline.ts             (UPDATED)
+  └── dist/
+
+================================================================================
+  ERROR CODES (17 total — 1 new)
+================================================================================
+
+  CIM_ERR_021-042, STAGE5_FAIL: unchanged from v1.7.1
+  PIPELINE_ERR_001-010: unchanged from v1.7.1
+  PIPELINE_ERR_011: Pass 1 returned 0 claims (NEW, retryable)
+
+================================================================================
+  KNOWN ISSUES
+================================================================================
+
+  RESOLVED:
+    - IC Insights Word doc formatting needs professional styling
+    - First attempt occasionally returns 0 claims (retry succeeds)
+
+  REMAINING:
+    - Internally inconsistent claims from model
+    - Existential threats section may be brief (~1,400 tokens)
+    - FULL depth (45-60 claims) not yet tuned
+    - Frontend signup page not yet built (API ready)
+    - Email verification needs Supabase Auth templates configured
+    - Existing deals lack user_id (backfill not implemented)
+
+================================================================================
+  NEXT SESSION PRIORITIES
+================================================================================
+
+  1. Frontend signup page (Next.js)
+  2. Thin existential threats prompt tuning
+  3. FULL depth tuning
+  4. Supabase Auth email template configuration
+
+================================================================================
+  END OF MANIFEST
+================================================================================

@@ -182,6 +182,11 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
     return;
   }
 
+  if (!authData.user) {
+    res.status(500).json({ error: "Failed to create account — no user returned" });
+    return;
+  }
+
   var authUserId = authData.user.id;
 
   // ── Create user row in users table ────────────────────────────

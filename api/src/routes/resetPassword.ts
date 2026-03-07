@@ -3,8 +3,8 @@
 // Mount in index.ts: app.use('/api/auth', resetPasswordRouter)
 
 import { Router, Request, Response } from 'express'
-import { supabase } from '../lib/supabase'
-import { sendEmail } from '../lib/mailgun'
+import { supabase } from '../lib/supabase.js'
+import { sendEmail } from '../lib/mailgun.js'
 
 const router = Router()
 

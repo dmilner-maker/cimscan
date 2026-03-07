@@ -227,6 +227,7 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
     var { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
       type: "signup",
       email: email,
+      password: password,
       options: {
         redirectTo: `${process.env.WEB_URL}/login`,
       },

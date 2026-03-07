@@ -28,9 +28,19 @@ export default function ResetPasswordPage() {
   const [checking, setChecking]         = useState(true)
 
   useEffect(() => {
-    // Supabase processes the hash token automatically on client init.
-    // By the time this effect runs, the session should already be established.
-    // We listen for PASSWORD_RECOVERY or check for an existing session.
+    // Only activate if URL hash contains a recovery token.
+    // This prevents a lingering PASSWORD_RECOVERY session from
+    // hijacking unrelated pages after a reset is complete.
+    const hasToken = window.location.hash.includes('access_token')
+
+    if (!hasToken) {
+      // No token in URL — sign out any stale recovery session and show invalid state
+      supabase.auth.signOut().then(() => {
+        setChecking(false)
+        setSessionReady(false)
+      })
+      return
+    }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if ((event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') && session) {
@@ -39,18 +49,14 @@ export default function ResetPasswordPage() {
       }
     })
 
-    // Also check immediately — token may already be processed
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
         setSessionReady(true)
         setChecking(false)
       } else {
-        // Give Supabase a moment to process the hash if session not ready yet
         setTimeout(() => {
           supabase.auth.getSession().then(({ data: { session: s } }) => {
-            if (s) {
-              setSessionReady(true)
-            }
+            if (s) setSessionReady(true)
             setChecking(false)
           })
         }, 1000)
@@ -85,6 +91,10 @@ export default function ResetPasswordPage() {
       setMessage(error.message)
       return
     }
+
+    // Sign out immediately to clear the recovery session —
+    // prevents it from bleeding into other pages
+    await supabase.auth.signOut()
 
     setStatus('success')
     setMessage('Password updated. Redirecting to sign in…')

@@ -5,9 +5,15 @@
  *   1. Upload Dataset D, IC Insights, and Synopsis to Supabase Storage
  *   2. Generate signed download URLs (7-day expiry)
  *   3. Send completion email via Mailgun with inline synopsis + download links
+ *   4. Delete source CIM from storage after successful delivery
  *
  * Storage structure: outputs/{deal_id}/{filename}
  * Signed URLs are not guessable and expire after 7 days.
+ *
+ * CIM Deletion Policy:
+ *   After successful upload + email delivery, the source CIM PDF is deleted
+ *   from the 'cims' bucket and cim_storage_path is set to null on the deal.
+ *   Errors are logged but never thrown — delivery already succeeded.
  */
 
 import { supabase } from "../lib/supabase.js";
@@ -30,6 +36,7 @@ interface Deal {
   claim_depth: "CORE" | "FULL";
   sender_email: string;
   firm_id: string;
+  cim_storage_path?: string | null;
 }
 
 interface UploadedFile {
@@ -44,6 +51,7 @@ interface UploadedFile {
 
 /**
  * Upload all pipeline outputs and send the delivery email.
+ * After successful delivery, deletes the source CIM from storage.
  */
 export async function uploadAndDeliver(
   deal: Deal,
@@ -81,6 +89,51 @@ export async function uploadAndDeliver(
   });
 
   console.log(`[delivery] All outputs uploaded and email sent for deal ${deal.id}`);
+
+  // Delete source CIM after successful delivery
+  if (deal.cim_storage_path) {
+    await deleteCimAfterDelivery(deal.id, deal.cim_storage_path);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CIM Deletion
+// ---------------------------------------------------------------------------
+
+/**
+ * Delete the source CIM PDF from storage and null out the path on the deal.
+ * Errors are logged but never thrown — delivery already succeeded.
+ */
+async function deleteCimAfterDelivery(
+  dealId: string,
+  cimStoragePath: string
+): Promise<void> {
+  try {
+    // 1. Delete the CIM file from the cims bucket
+    const { error: storageError } = await supabase.storage
+      .from("cims")
+      .remove([cimStoragePath]);
+
+    if (storageError) {
+      console.error(`[delivery] Failed to delete CIM from storage for deal ${dealId}:`, storageError);
+      return;
+    }
+
+    // 2. Null out the path on the deal row
+    const { error: dbError } = await supabase
+      .from("deals")
+      .update({ cim_storage_path: null })
+      .eq("id", dealId);
+
+    if (dbError) {
+      console.error(`[delivery] Failed to null cim_storage_path for deal ${dealId}:`, dbError);
+      return;
+    }
+
+    console.log(`[delivery] CIM deleted for deal ${dealId}: ${cimStoragePath}`);
+  } catch (err) {
+    console.error(`[delivery] CIM deletion error for deal ${dealId}:`, err);
+  }
 }
 
 // ---------------------------------------------------------------------------

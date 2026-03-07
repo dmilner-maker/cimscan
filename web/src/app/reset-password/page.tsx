@@ -1,14 +1,11 @@
 'use client'
 
 // web/src/app/reset-password/page.tsx
-// Supabase redirects here after user clicks the reset link in their email.
-// The URL will contain an access_token + refresh_token in the hash fragment.
-// Supabase JS client picks these up automatically on mount.
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 
-type Status = 'idle' | 'loading' | 'success' | 'error' | 'invalid'
+type Status = 'idle' | 'loading' | 'success' | 'error'
 
 const T = {
   BG:          '#0f0e0c',
@@ -23,38 +20,44 @@ const T = {
 }
 
 export default function ResetPasswordPage() {
-  const [password, setPassword]   = useState('')
-  const [confirm, setConfirm]     = useState('')
-  const [status, setStatus]       = useState<Status>('idle')
-  const [message, setMessage]     = useState('')
+  const [password, setPassword]         = useState('')
+  const [confirm, setConfirm]           = useState('')
+  const [status, setStatus]             = useState<Status>('idle')
+  const [message, setMessage]           = useState('')
   const [sessionReady, setSessionReady] = useState(false)
+  const [checking, setChecking]         = useState(true)
 
-  // Supabase emits an SIGNED_IN event with type PASSWORD_RECOVERY
-  // when it detects the token in the URL hash. We wait for that before
-  // enabling the form — without it, updateUser() will fail.
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') {
+    // Supabase processes the hash token automatically on client init.
+    // By the time this effect runs, the session should already be established.
+    // We listen for PASSWORD_RECOVERY or check for an existing session.
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if ((event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') && session) {
         setSessionReady(true)
+        setChecking(false)
       }
     })
 
-    // Also check if we already have a session (e.g. page refreshed)
+    // Also check immediately — token may already be processed
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) setSessionReady(true)
+      if (session) {
+        setSessionReady(true)
+        setChecking(false)
+      } else {
+        // Give Supabase a moment to process the hash if session not ready yet
+        setTimeout(() => {
+          supabase.auth.getSession().then(({ data: { session: s } }) => {
+            if (s) {
+              setSessionReady(true)
+            }
+            setChecking(false)
+          })
+        }, 1000)
+      }
     })
 
-    // If no token in URL at all, mark invalid after a short delay
-    const timer = setTimeout(() => {
-      if (!window.location.hash.includes('access_token')) {
-        setStatus('invalid')
-      }
-    }, 1500)
-
-    return () => {
-      subscription.unsubscribe()
-      clearTimeout(timer)
-    }
+    return () => { subscription.unsubscribe() }
   }, [])
 
   async function handleReset(e: React.FormEvent) {
@@ -85,10 +88,7 @@ export default function ResetPasswordPage() {
 
     setStatus('success')
     setMessage('Password updated. Redirecting to sign in…')
-
-    setTimeout(() => {
-      window.location.href = '/login'
-    }, 2000)
+    setTimeout(() => { window.location.href = '/login' }, 2000)
   }
 
   return (
@@ -106,13 +106,10 @@ export default function ResetPasswordPage() {
 
         .root {
           min-height: 100vh;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
+          display: flex; flex-direction: column;
+          align-items: center; justify-content: center;
           padding: 24px;
-          background-image:
-            radial-gradient(ellipse 80% 50% at 50% -10%, rgba(201,169,110,0.07) 0%, transparent 70%);
+          background-image: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(201,169,110,0.07) 0%, transparent 70%);
         }
 
         .wordmark {
@@ -133,8 +130,7 @@ export default function ResetPasswordPage() {
           width: 100%; max-width: 400px;
           background: ${T.CARD_BG};
           border: 1px solid ${T.CARD_BORDER};
-          border-radius: 12px;
-          padding: 40px 36px 36px;
+          border-radius: 12px; padding: 40px 36px 36px;
         }
 
         .pill {
@@ -177,7 +173,6 @@ export default function ResetPasswordPage() {
         .input:focus { border-color: ${T.GOLD}; }
         .input:disabled { opacity: 0.4; cursor: not-allowed; }
 
-        /* Password strength bar */
         .strength-bar {
           height: 3px; border-radius: 2px;
           background: rgba(255,255,255,0.06);
@@ -224,20 +219,19 @@ export default function ResetPasswordPage() {
         }
         .back-link:hover { opacity: 0.7; }
 
-        /* Waiting state */
-        .waiting {
-          text-align: center; padding: 12px 0;
+        .checking {
+          text-align: center; padding: 16px 0;
           font-size: 13px; color: ${T.MUTED};
         }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-        .waiting-dot {
+        .dot {
           display: inline-block; width: 6px; height: 6px;
           border-radius: 50%; background: ${T.GOLD};
           animation: pulse 1.4s ease-in-out infinite;
           margin: 0 2px; vertical-align: middle;
         }
-        .waiting-dot:nth-child(2) { animation-delay: 0.2s; }
-        .waiting-dot:nth-child(3) { animation-delay: 0.4s; }
+        .dot:nth-child(2) { animation-delay: 0.2s; }
+        .dot:nth-child(3) { animation-delay: 0.4s; }
 
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner {
@@ -250,7 +244,6 @@ export default function ResetPasswordPage() {
       `}</style>
 
       <div className="root">
-
         <a href="/" className="wordmark">
           <div className="wordmark-icon">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -261,12 +254,20 @@ export default function ResetPasswordPage() {
         </a>
 
         <div className="card">
+          <div className="pill"><span className="pill-dot" />New Password</div>
+          <h1 className="heading">Set a new password</h1>
+          <p className="subheading">Choose something strong — at least 8 characters.</p>
 
-          {status === 'invalid' ? (
+          {checking ? (
+            <div className="checking">
+              Verifying link
+              <span className="dot" />
+              <span className="dot" />
+              <span className="dot" />
+            </div>
+          ) : !sessionReady ? (
             <>
-              <div className="pill"><span className="pill-dot" />Invalid Link</div>
-              <h1 className="heading">Link expired</h1>
-              <p className="subheading">
+              <p style={{ fontSize: 14, color: T.MUTED, marginBottom: 24 }}>
                 This reset link is invalid or has already been used. Request a new one from the login page.
               </p>
               <div className="divider" />
@@ -274,81 +275,59 @@ export default function ResetPasswordPage() {
             </>
           ) : (
             <>
-              <div className="pill"><span className="pill-dot" />New Password</div>
-              <h1 className="heading">Set a new password</h1>
-              <p className="subheading">
-                Choose something strong — at least 8 characters.
-              </p>
-
-              {!sessionReady ? (
-                <div className="waiting">
-                  Verifying reset link
-                  <span className="waiting-dot" />
-                  <span className="waiting-dot" />
-                  <span className="waiting-dot" />
+              <form onSubmit={handleReset}>
+                <div className="field">
+                  <label className="label">New password</label>
+                  <input
+                    className="input"
+                    type="password"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    required
+                    disabled={status === 'loading' || status === 'success'}
+                    autoComplete="new-password"
+                    autoFocus
+                  />
+                  {password.length > 0 && (
+                    <div className="strength-bar">
+                      <div className="strength-fill" style={{
+                        width: `${Math.min(100, (password.length / 16) * 100)}%`,
+                        background: password.length < 8 ? T.ERROR : password.length < 12 ? T.GOLD_DIM : T.GOLD,
+                      }} />
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <form onSubmit={handleReset}>
-                  <div className="field">
-                    <label className="label">New password</label>
-                    <input
-                      className="input"
-                      type="password"
-                      placeholder="••••••••"
-                      value={password}
-                      onChange={e => setPassword(e.target.value)}
-                      required
-                      disabled={status === 'loading' || status === 'success'}
-                      autoComplete="new-password"
-                      autoFocus
-                    />
-                    {/* Strength indicator */}
-                    {password.length > 0 && (
-                      <div className="strength-bar">
-                        <div className="strength-fill" style={{
-                          width: `${Math.min(100, (password.length / 16) * 100)}%`,
-                          background: password.length < 8
-                            ? T.ERROR
-                            : password.length < 12
-                            ? T.GOLD_DIM
-                            : T.GOLD,
-                        }} />
-                      </div>
-                    )}
-                  </div>
 
-                  <div className="field">
-                    <label className="label">Confirm password</label>
-                    <input
-                      className="input"
-                      type="password"
-                      placeholder="••••••••"
-                      value={confirm}
-                      onChange={e => setConfirm(e.target.value)}
-                      required
-                      disabled={status === 'loading' || status === 'success'}
-                      autoComplete="new-password"
-                      style={{
-                        borderColor: confirm.length > 0 && confirm !== password
-                          ? 'rgba(224,112,112,0.5)'
-                          : undefined
-                      }}
-                    />
-                  </div>
+                <div className="field">
+                  <label className="label">Confirm password</label>
+                  <input
+                    className="input"
+                    type="password"
+                    placeholder="••••••••"
+                    value={confirm}
+                    onChange={e => setConfirm(e.target.value)}
+                    required
+                    disabled={status === 'loading' || status === 'success'}
+                    autoComplete="new-password"
+                    style={{
+                      borderColor: confirm.length > 0 && confirm !== password
+                        ? 'rgba(224,112,112,0.5)' : undefined
+                    }}
+                  />
+                </div>
 
-                  <button
-                    className="btn-primary"
-                    type="submit"
-                    disabled={status === 'loading' || status === 'success' || !sessionReady}
-                  >
-                    {status === 'loading'
-                      ? <><span className="spinner" />Updating…</>
-                      : status === 'success'
-                      ? 'Password updated'
-                      : 'Set new password'}
-                  </button>
-                </form>
-              )}
+                <button
+                  className="btn-primary"
+                  type="submit"
+                  disabled={status === 'loading' || status === 'success'}
+                >
+                  {status === 'loading'
+                    ? <><span className="spinner" />Updating…</>
+                    : status === 'success' ? 'Password updated'
+                    : 'Set new password'}
+                </button>
+              </form>
 
               {message && (
                 <div className={`msg ${status === 'error' ? 'msg-error' : 'msg-success'}`}>
@@ -360,7 +339,6 @@ export default function ResetPasswordPage() {
               <a href="/login" className="back-link">← Back to sign in</a>
             </>
           )}
-
         </div>
       </div>
     </>

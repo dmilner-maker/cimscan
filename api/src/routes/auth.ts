@@ -4,6 +4,7 @@
  * POST /api/auth/signup
  *   - Existing firm: pick from dropdown, create user, verify email
  *   - New firm: validate website, create firm + user, verify email
+ *   - Issues a first-run-free promo code (one per firm, CORE or FULL)
  *
  * POST /api/auth/verify-email
  *   - Confirm email verification token (Supabase Auth handles this,
@@ -18,6 +19,7 @@
 
 import { Router, Request, Response } from "express";
 import { supabase } from "../lib/supabase.js";
+import { issueFirstRunFreeCode } from "../services/promo.js";
 
 export const authRouter = Router();
 
@@ -209,6 +211,18 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
     return;
   }
 
+  // ── Issue first-run-free promo code (one per firm) ────────────
+  var promoCode: string | null = null;
+  try {
+    var promo = await issueFirstRunFreeCode(firmId, email);
+    if (promo) {
+      promoCode = promo.code;
+    }
+  } catch (err) {
+    // Non-fatal — user account is created, promo is a bonus
+    console.error("[auth] Failed to issue first-run-free code:", err);
+  }
+
   // ── Send verification email (Supabase Auth handles this) ──────
   // The createUser call with email_confirm: false triggers Supabase
   // to send a verification email automatically if configured in
@@ -216,7 +230,8 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
 
   console.log(
     "[auth] User " + authUserId + " created: " + email +
-    " → firm " + firmName + " (" + firmId + ")"
+    " → firm " + firmName + " (" + firmId + ")" +
+    (promoCode ? " — first-run-free code: " + promoCode : "")
   );
 
   res.status(201).json({
@@ -225,8 +240,11 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
     firm_id: firmId,
     firm_name: firmName,
     ingest_address: ingestAddress,
+    promo_code: promoCode,
     status: "verification_email_sent",
-    message: "Check your email to verify your account. Once verified, you can submit CIMs to " + ingestAddress,
+    message: promoCode
+      ? "Check your email to verify your account. Your first analysis is free — use code " + promoCode + " when you configure your first run. Submit CIMs to " + ingestAddress
+      : "Check your email to verify your account. Once verified, you can submit CIMs to " + ingestAddress,
   });
 });
 

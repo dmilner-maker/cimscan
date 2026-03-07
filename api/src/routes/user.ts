@@ -2,6 +2,7 @@
  * User Account Routes — Data Deletion & Account Deletion
  *
  * Endpoints:
+ *   GET  /api/user/account-info — Return account + firm details for the authenticated user
  *   DELETE /api/user/data    — Delete all deals, outputs, and CIMs for the authenticated user
  *   DELETE /api/user/account — Delete all user data + the user account itself
  *
@@ -16,7 +17,6 @@
 
 import { Router, Request, Response } from "express";
 import { supabase } from "../lib/supabase.js";
-import { createClient } from "@supabase/supabase-js";
 
 const router = Router();
 
@@ -43,6 +43,36 @@ async function requireAuth(req: Request, res: Response, next: Function): Promise
   (req as any).userEmail = data.user.email;
   next();
 }
+
+// ---------------------------------------------------------------------------
+// GET /api/user/account-info — Return account + firm details
+// ---------------------------------------------------------------------------
+
+router.get("/account-info", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const userId = (req as any).userId;
+
+  const { data: user, error } = await supabase
+    .from("users")
+    .select("email, display_name, role, firms(name, website, ingest_address)")
+    .eq("id", userId)
+    .single();
+
+  if (error || !user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const firm = (user as any).firms;
+
+  res.json({
+    email: user.email,
+    display_name: user.display_name,
+    role: user.role,
+    firm_name: firm?.name || "",
+    firm_website: firm?.website || "",
+    ingest_address: firm?.ingest_address || "",
+  });
+});
 
 // ---------------------------------------------------------------------------
 // DELETE /api/user/data — Delete all deals and artifacts, keep account
@@ -139,7 +169,6 @@ interface DeletionStats {
 async function deleteUserDeals(userId: string): Promise<DeletionStats> {
   const stats: DeletionStats = { dealsProcessed: 0, filesDeleted: 0, errors: 0 };
 
-  // Fetch all deals for this user
   const { data: deals, error: queryError } = await supabase
     .from("deals")
     .select("id, cim_storage_path, output_dataset_d_path, output_ic_insights_path, output_synopsis_path")
@@ -156,7 +185,6 @@ async function deleteUserDeals(userId: string): Promise<DeletionStats> {
 
   for (const deal of deals) {
     try {
-      // Delete CIM from storage
       if (deal.cim_storage_path) {
         const { error } = await supabase.storage.from("cims").remove([deal.cim_storage_path]);
         if (error) {
@@ -167,7 +195,6 @@ async function deleteUserDeals(userId: string): Promise<DeletionStats> {
         }
       }
 
-      // Delete outputs from storage
       const outputPaths = [
         deal.output_dataset_d_path,
         deal.output_ic_insights_path,
@@ -184,7 +211,6 @@ async function deleteUserDeals(userId: string): Promise<DeletionStats> {
         }
       }
 
-      // Delete the deal row
       const { error: dealDeleteError } = await supabase
         .from("deals")
         .delete()

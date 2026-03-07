@@ -19,6 +19,7 @@
 
 import { Router, Request, Response } from "express";
 import { supabase } from "../lib/supabase.js";
+import { sendEmail } from "../lib/mailgun.js";
 import { issueFirstRunFreeCode } from "../services/promo.js";
 
 export const authRouter = Router();
@@ -160,7 +161,7 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
     return;
   }
 
-  // ── Create Supabase Auth user (triggers email verification) ───
+  // ── Create Supabase Auth user ──────────────────────────────────
   var { data: authData, error: authError } = await supabase.auth.admin.createUser({
     email: email,
     password: password,
@@ -195,7 +196,7 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
   var { error: userError } = await supabase
     .from("users")
     .insert({
-      id: authUserId,  // match Supabase Auth uid for RLS
+      id: authUserId,
       email: email,
       firm_id: firmId,
       role: "analyst",
@@ -205,7 +206,6 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
 
   if (userError) {
     console.error("[auth] Failed to create user row:", userError);
-    // Try to clean up the auth user
     await supabase.auth.admin.deleteUser(authUserId);
     res.status(500).json({ error: "Failed to create user record" });
     return;
@@ -219,14 +219,67 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
       promoCode = promo.code;
     }
   } catch (err) {
-    // Non-fatal — user account is created, promo is a bonus
     console.error("[auth] Failed to issue first-run-free code:", err);
   }
 
-  // ── Send verification email (Supabase Auth handles this) ──────
-  // The createUser call with email_confirm: false triggers Supabase
-  // to send a verification email automatically if configured in
-  // Supabase Auth settings (Authentication > Email Templates).
+  // ── Send verification email via Mailgun ───────────────────────
+  try {
+    var { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
+      type: "signup",
+      email: email,
+      options: {
+        redirectTo: `${process.env.WEB_URL}/login`,
+      },
+    });
+
+    if (linkError || !linkData?.properties?.action_link) {
+      console.error("[auth] Failed to generate verification link:", linkError);
+    } else {
+      var verifyLink = linkData.properties.action_link;
+
+      await sendEmail({
+        to: email,
+        subject: "Verify your CIMScan account",
+        html: `
+          <div style="font-family: 'IBM Plex Sans', Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #0f0e0c; color: #f0ebe3; padding: 40px 32px; border-radius: 8px;">
+            <div style="margin-bottom: 32px;">
+              <span style="font-size: 18px; font-weight: 600; color: #c9a96e; letter-spacing: 0.02em;">CIMScan</span>
+            </div>
+            <h1 style="font-size: 22px; font-weight: 400; color: #f0ebe3; margin: 0 0 12px;">Verify your email address</h1>
+            <p style="font-size: 14px; color: #9a9488; line-height: 1.6; margin: 0 0 8px;">
+              Welcome to CIMScan${firmName ? ", " + firmName : ""}. Click below to verify your email and activate your account.
+            </p>
+            ${promoCode ? `
+            <p style="font-size: 14px; color: #9a9488; line-height: 1.6; margin: 0 0 24px;">
+              Your first analysis is on us — use code <strong style="color: #c9a96e;">${promoCode}</strong> when you configure your first run.
+            </p>
+            ` : '<div style="margin-bottom: 24px;"></div>'}
+            <a href="${verifyLink}"
+               style="display: inline-block; background: linear-gradient(135deg, #c9a96e 0%, #8a7448 100%);
+                      color: #0f0e0c; font-size: 14px; font-weight: 600; text-decoration: none;
+                      padding: 13px 28px; border-radius: 8px; letter-spacing: 0.02em;">
+              Verify email
+            </a>
+            <p style="font-size: 13px; color: #6a6258; margin: 28px 0 8px;">
+              Once verified, submit CIMs to:
+            </p>
+            <p style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #9a9488; margin: 0 0 28px;">
+              ${ingestAddress}
+            </p>
+            <p style="font-size: 12px; color: #6a6258; margin: 0; line-height: 1.5;">
+              If the button doesn't work, copy this link into your browser:<br/>
+              <span style="color: #9a9488; word-break: break-all;">${verifyLink}</span>
+            </p>
+          </div>
+        `,
+      });
+
+      console.log("[auth] Verification email sent to " + email);
+    }
+  } catch (err) {
+    // Non-fatal — user is created, email is a bonus
+    console.error("[auth] Failed to send verification email:", err);
+  }
 
   console.log(
     "[auth] User " + authUserId + " created: " + email +
@@ -305,7 +358,7 @@ async function createNewFirm(
   var prefix = cleanWebsite.split(".")[0];
   var ingestAddress = prefix + "@ingest.cimscan.ai";
 
-  // Check for ingest address collision (extremely unlikely given 0 collisions in dataset)
+  // Check for ingest address collision
   var { data: collision } = await supabase
     .from("firms")
     .select("id")
@@ -313,7 +366,6 @@ async function createNewFirm(
     .maybeSingle();
 
   if (collision) {
-    // Append a short random suffix
     var suffix = Math.random().toString(36).substring(2, 6);
     ingestAddress = prefix + "-" + suffix + "@ingest.cimscan.ai";
   }
@@ -352,7 +404,6 @@ async function createNewFirm(
 // ---------------------------------------------------------------------------
 
 async function validateWebsite(domain: string): Promise<boolean> {
-  // Try HTTPS first, then HTTP
   var urls = [
     "https://" + domain,
     "http://" + domain,
@@ -376,12 +427,10 @@ async function validateWebsite(domain: string): Promise<boolean> {
 
       clearTimeout(timeout);
 
-      // Any response (even 403/404) means the domain resolves and has a web server
       if (response.status < 600) {
         return true;
       }
     } catch (err) {
-      // Try next URL variant
       continue;
     }
   }

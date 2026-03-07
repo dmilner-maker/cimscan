@@ -8,6 +8,7 @@ import { stripeWebhookRouter } from "./routes/stripeWebhook.js";
 import { adminRouter } from "./routes/admin.js";
 import { authRouter } from "./routes/auth.js";
 import userRoutes from "./routes/user.js";
+import resetPasswordRouter from "./routes/resetPassword.js";
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -28,6 +29,7 @@ app.use("/api/deals", dealsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api", authRouter);
 app.use("/api/user", userRoutes);
+app.use("/api/auth", resetPasswordRouter);
 
 app.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`CIMScan API running at http://localhost:${PORT}`);

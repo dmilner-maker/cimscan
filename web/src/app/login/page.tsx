@@ -1,15 +1,6 @@
 'use client'
 
 // web/src/app/login/page.tsx
-// Drop into: web/src/app/login/page.tsx
-// Requires: NEXT_PUBLIC_API_URL env var + Supabase client at web/src/lib/supabase.ts
-//
-// Supabase client expected at @/lib/supabase — example:
-//   import { createClient } from '@supabase/supabase-js'
-//   export const supabase = createClient(
-//     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-//     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-//   )
 
 import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
@@ -17,7 +8,6 @@ import { supabase } from '@/lib/supabase'
 type Mode = 'login' | 'forgot'
 type Status = 'idle' | 'loading' | 'success' | 'error'
 
-// ─── Design tokens (mirror globals.css / page.tsx) ───────────────────────────
 const T = {
   BG:          '#0f0e0c',
   CARD_BG:     'rgba(255,255,255,0.025)',
@@ -37,8 +27,6 @@ export default function LoginPage() {
   const [status, setStatus]     = useState<Status>('idle')
   const [message, setMessage]   = useState('')
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
-
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     setStatus('loading')
@@ -52,8 +40,6 @@ export default function LoginPage() {
       return
     }
 
-    // Redirect after login — update this path once routing is settled
-    // e.g. router.push('/deals')
     setStatus('success')
     setMessage('Signed in. Redirecting...')
     window.location.href = '/'
@@ -64,20 +50,23 @@ export default function LoginPage() {
     setStatus('loading')
     setMessage('')
 
-    const redirectTo = `${window.location.origin}/reset-password`
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo,
-    })
+      if (!res.ok) {
+        throw new Error('Request failed')
+      }
 
-    if (error) {
+      setStatus('success')
+      setMessage('Check your inbox — a reset link is on its way.')
+    } catch {
       setStatus('error')
-      setMessage(error.message)
-      return
+      setMessage('Something went wrong. Please try again.')
     }
-
-    setStatus('success')
-    setMessage('Check your inbox — a reset link is on its way.')
   }
 
   function switchMode(next: Mode) {
@@ -87,11 +76,8 @@ export default function LoginPage() {
     setPassword('')
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-
   return (
     <>
-      {/* ── Google Fonts ── */}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
@@ -112,12 +98,10 @@ export default function LoginPage() {
           justify-content: center;
           padding: 24px;
           background: ${T.BG};
-          /* subtle noise grain */
           background-image:
             radial-gradient(ellipse 80% 50% at 50% -10%, rgba(201,169,110,0.07) 0%, transparent 70%);
         }
 
-        /* ── Wordmark ── */
         .wordmark {
           display: flex;
           align-items: center;
@@ -142,7 +126,6 @@ export default function LoginPage() {
           letter-spacing: 0.01em;
         }
 
-        /* ── Card ── */
         .card {
           width: 100%;
           max-width: 400px;
@@ -152,7 +135,6 @@ export default function LoginPage() {
           padding: 40px 36px 36px;
         }
 
-        /* ── Section label pill ── */
         .pill {
           display: inline-flex;
           align-items: center;
@@ -174,7 +156,6 @@ export default function LoginPage() {
           background: ${T.GOLD};
         }
 
-        /* ── Heading ── */
         .heading {
           font-family: 'DM Serif Display', serif;
           font-size: 28px;
@@ -190,7 +171,6 @@ export default function LoginPage() {
           margin-bottom: 32px;
         }
 
-        /* ── Form ── */
         .field {
           display: flex;
           flex-direction: column;
@@ -220,7 +200,6 @@ export default function LoginPage() {
         .input::placeholder { color: ${T.DIM}; }
         .input:focus { border-color: ${T.GOLD}; }
 
-        /* ── Primary button ── */
         .btn-primary {
           width: 100%;
           margin-top: 8px;
@@ -240,7 +219,6 @@ export default function LoginPage() {
         .btn-primary:active:not(:disabled) { transform: scale(0.99); }
         .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
-        /* ── Message ── */
         .msg {
           margin-top: 16px;
           padding: 10px 14px;
@@ -259,14 +237,12 @@ export default function LoginPage() {
           color: ${T.GOLD};
         }
 
-        /* ── Divider ── */
         .divider {
           height: 1px;
           background: ${T.CARD_BORDER};
           margin: 28px 0;
         }
 
-        /* ── Footer links ── */
         .footer-row {
           display: flex;
           align-items: center;
@@ -287,7 +263,6 @@ export default function LoginPage() {
         }
         .link:hover { opacity: 0.7; }
 
-        /* ── Loading spinner ── */
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner {
           display: inline-block;
@@ -303,7 +278,6 @@ export default function LoginPage() {
 
       <div className="login-root">
 
-        {/* Wordmark */}
         <a href="/" className="wordmark">
           <div className="wordmark-icon">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -374,7 +348,7 @@ export default function LoginPage() {
 
               <div className="footer-row">
                 <span>
-                  Don't have an account?{' '}
+                  Don&apos;t have an account?{' '}
                   <a href="/signup" className="link">Sign up</a>
                 </span>
                 <button className="link" onClick={() => switchMode('forgot')}>
@@ -391,7 +365,7 @@ export default function LoginPage() {
               </div>
               <h1 className="heading">Reset your password</h1>
               <p className="subheading">
-                Enter your email and we'll send a reset link. Check your inbox — it expires in 1 hour.
+                Enter your email and we&apos;ll send a reset link. Check your inbox — it expires in 1 hour.
               </p>
 
               <form onSubmit={handleForgot}>

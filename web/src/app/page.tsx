@@ -278,7 +278,7 @@ function Nav() {
         <span style={{ fontFamily: SERIF, fontSize: 18, color: "#d4cfc6", letterSpacing: "0.02em" }}>CIMScan</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
-        {[["#how-it-works","How it works"],["#deliverables","Deliverables"],["#pricing","Pricing"],["#security","Security"]].map(([h,l])=>(
+        {[["#how-it-works","How it works"],["#deliverables","Deliverables"],["#pricing","Pricing"],["#security","Security"],["/help","Help"]].map(([h,l])=>(
           <a key={h} href={h} style={{ color: MUTED, textDecoration: "none", fontSize: 13, fontWeight: 500, transition: "color 0.2s" }}
             onMouseEnter={e=>e.target.style.color=CREAM} onMouseLeave={e=>e.target.style.color=MUTED}>{l}</a>
         ))}
@@ -783,7 +783,11 @@ function Footer() {
         }}>CS</div>
         <E k="footer_entity" style={{ fontFamily: SANS, fontSize: 13, color: DIM }} />
       </div>
-      <div style={{ fontFamily: SANS, fontSize: 12, color: "#4a4540" }}>© {new Date().getFullYear()} True Bearing LLC. All rights reserved.</div>
+      <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
+        <a href="/help" style={{ fontFamily: SANS, fontSize: 12, color: DIM, textDecoration: "none" }}>Help &amp; Support</a>
+        <a href="/account" style={{ fontFamily: SANS, fontSize: 12, color: DIM, textDecoration: "none" }}>Account</a>
+        <span style={{ fontFamily: SANS, fontSize: 12, color: "#4a4540" }}>© {new Date().getFullYear()} True Bearing LLC. All rights reserved.</span>
+      </div>
     </footer>
   );
 }

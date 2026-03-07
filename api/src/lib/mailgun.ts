@@ -1,18 +1,17 @@
 // api/src/lib/mailgun.ts
 
-
-
 interface SendEmailParams {
   to: string;
   subject: string;
   html: string;
+  replyTo?: string;
 }
 
 const MAILGUN_API_KEY = process.env.MAILGUN_API_KEY!;
 const MAILGUN_DOMAIN = process.env.MAILGUN_DOMAIN!; // ingest.cimscan.ai
 const FROM_ADDRESS = `CIMScan <noreply@${MAILGUN_DOMAIN}>`;
 
-export async function sendEmail({ to, subject, html }: SendEmailParams): Promise<void> {
+export async function sendEmail({ to, subject, html, replyTo }: SendEmailParams): Promise<void> {
   const url = `https://api.mailgun.net/v3/${MAILGUN_DOMAIN}/messages`;
 
   const form = new URLSearchParams();
@@ -20,6 +19,9 @@ export async function sendEmail({ to, subject, html }: SendEmailParams): Promise
   form.append("to", to);
   form.append("subject", subject);
   form.append("html", html);
+  if (replyTo) {
+    form.append("h:Reply-To", replyTo);
+  }
 
   const response = await fetch(url, {
     method: "POST",

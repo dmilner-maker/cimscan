@@ -10,6 +10,7 @@ import { authRouter } from "./routes/auth.js";
 import userRoutes from "./routes/user.js";
 import resetPasswordRouter from "./routes/resetPassword.js";
 import welcomeRouter from "./routes/welcome.js";
+import supportRouter from "./routes/support.js";
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -32,6 +33,7 @@ app.use("/api", authRouter);
 app.use("/api/user", userRoutes);
 app.use("/api/auth", resetPasswordRouter);
 app.use("/api/auth", welcomeRouter);
+app.use("/api", supportRouter);
 
 app.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`CIMScan API running at http://localhost:${PORT}`);

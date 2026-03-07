@@ -42,8 +42,10 @@ const DEFAULT_CONTENT = {
 
   pricing_label: "Pricing",
   pricing_title: "Pay per run. No subscriptions.",
+  core_price: "$249",
   core_claims: "25–28",
   core_desc: "The right depth for initial screening. Covers major diligence surfaces with quantified underwriting gates.",
+  full_price: "$399",
   full_claims: "45–60",
   full_desc: "Comprehensive extraction across all surfaces. Higher quotas per surface area with extended interdependency analysis.",
   pricing_note: "No charge if the CIM fails the quality gate. Payment is authorized on configuration and only captured on successful completion.",
@@ -427,21 +429,6 @@ function DemoVideo() {
     }
   };
 
-  // ── CONFIGURATION ──────────────────────────────────────────────
-  // Replace this placeholder with your actual video:
-  //
-  // Self-hosted MP4:
-  //   <video ref={videoRef} src="/videos/cimscan-demo.mp4" ... />
-  //
-  // YouTube: replace the entire <video> block with YouTube iframe API
-  //   and use onStateChange to detect YT.PlayerState.ENDED
-  //
-  // HeyGen embed: replace with their embed code and listen for
-  //   the postMessage event when playback completes
-  //
-  // The CTA overlay logic stays the same regardless of source.
-  // ────────────────────────────────────────────────────────────────
-
   return (
     <div style={{
       position: "relative", borderRadius: 14, overflow: "hidden",
@@ -669,9 +656,12 @@ function Pricing() {
         <Reveal delay={0}>
           <div style={{ background: CARD_BG, border: `1px solid ${CARD_BORDER}`, borderRadius: 14, padding: "36px 32px" }}>
             <div style={{ fontFamily: MONO, fontSize: 11, color: GOLD_DIM, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 16, fontWeight: 500 }}>Core</div>
-            <div style={{ fontFamily: SERIF, fontSize: 36, color: CREAM, marginBottom: 8, display: "flex", alignItems: "baseline", gap: 8 }}>
-              <E k="core_claims" style={{ fontFamily: SERIF, fontSize: 36, color: CREAM }} />
-              <span style={{ fontSize: 18, color: MUTED, fontFamily: SERIF }}>claims</span>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+              <E k="core_price" style={{ fontFamily: SERIF, fontSize: 40, color: CREAM }} />
+            </div>
+            <div style={{ fontFamily: SANS, fontSize: 13, color: MUTED, marginBottom: 16 }}>
+              <E k="core_claims" style={{ fontFamily: SANS, fontSize: 13, color: MUTED }} />
+              <span style={{ color: MUTED }}> claims</span>
             </div>
             <div style={{ marginBottom: 24 }}><E k="core_desc" tag="p" style={{ fontFamily: SANS, fontSize: 13.5, color: MUTED, lineHeight: 1.65 }} /></div>
             <div style={{ borderTop: `1px solid ${CARD_BORDER}`, paddingTop: 16 }}>
@@ -692,9 +682,12 @@ function Pricing() {
               fontFamily: SANS, textTransform: "uppercase", letterSpacing: "0.06em",
             }}>Deep dive</div>
             <div style={{ fontFamily: MONO, fontSize: 11, color: GOLD, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 16, fontWeight: 500 }}>Full</div>
-            <div style={{ fontFamily: SERIF, fontSize: 36, color: CREAM, marginBottom: 8, display: "flex", alignItems: "baseline", gap: 8 }}>
-              <E k="full_claims" style={{ fontFamily: SERIF, fontSize: 36, color: CREAM }} />
-              <span style={{ fontSize: 18, color: MUTED, fontFamily: SERIF }}>claims</span>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+              <E k="full_price" style={{ fontFamily: SERIF, fontSize: 40, color: CREAM }} />
+            </div>
+            <div style={{ fontFamily: SANS, fontSize: 13, color: MUTED, marginBottom: 16 }}>
+              <E k="full_claims" style={{ fontFamily: SANS, fontSize: 13, color: MUTED }} />
+              <span style={{ color: MUTED }}> claims</span>
             </div>
             <div style={{ marginBottom: 24 }}><E k="full_desc" tag="p" style={{ fontFamily: SANS, fontSize: 13.5, color: MUTED, lineHeight: 1.65 }} /></div>
             <div style={{ borderTop: "1px solid rgba(201,169,110,0.08)", paddingTop: 16 }}>

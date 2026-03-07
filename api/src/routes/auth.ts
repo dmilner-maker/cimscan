@@ -229,7 +229,7 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
       email: email,
       password: password,
       options: {
-        redirectTo: `${process.env.WEB_URL}/login`,
+        redirectTo: `${process.env.WEB_URL}/login?verified=true`,
       },
     });
 

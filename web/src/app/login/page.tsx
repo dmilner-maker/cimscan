@@ -2,7 +2,7 @@
 
 // web/src/app/login/page.tsx
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 
 type Mode = 'login' | 'forgot'
@@ -18,14 +18,25 @@ const T = {
   MUTED:       '#9a9488',
   DIM:         '#6a6258',
   ERROR:       '#e07070',
+  GREEN:       '#6dbf8a',
 }
 
 export default function LoginPage() {
-  const [mode, setMode]         = useState<Mode>('login')
-  const [email, setEmail]       = useState('')
-  const [password, setPassword] = useState('')
-  const [status, setStatus]     = useState<Status>('idle')
-  const [message, setMessage]   = useState('')
+  const [mode, setMode]           = useState<Mode>('login')
+  const [email, setEmail]         = useState('')
+  const [password, setPassword]   = useState('')
+  const [status, setStatus]       = useState<Status>('idle')
+  const [message, setMessage]     = useState('')
+  const [verified, setVerified]   = useState(false)
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('verified') === 'true') {
+      setVerified(true)
+      // Clean the URL without reloading
+      window.history.replaceState({}, '', '/login')
+    }
+  }, [])
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -57,9 +68,7 @@ export default function LoginPage() {
         body: JSON.stringify({ email }),
       })
 
-      if (!res.ok) {
-        throw new Error('Request failed')
-      }
+      if (!res.ok) throw new Error('Request failed')
 
       setStatus('success')
       setMessage('Check your inbox — a reset link is on its way.')
@@ -103,32 +112,46 @@ export default function LoginPage() {
         }
 
         .wordmark {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-bottom: 40px;
-          text-decoration: none;
+          display: flex; align-items: center; gap: 10px;
+          margin-bottom: 40px; text-decoration: none;
         }
         .wordmark-icon {
-          width: 32px;
-          height: 32px;
-          border: 1.5px solid ${T.GOLD};
-          border-radius: 6px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          width: 32px; height: 32px;
+          border: 1.5px solid ${T.GOLD}; border-radius: 6px;
+          display: flex; align-items: center; justify-content: center;
         }
         .wordmark-icon svg { display: block; }
         .wordmark-text {
           font-family: 'DM Serif Display', serif;
-          font-size: 20px;
-          color: ${T.CREAM};
-          letter-spacing: 0.01em;
+          font-size: 20px; color: ${T.CREAM}; letter-spacing: 0.01em;
+        }
+
+        /* ── Verified banner ── */
+        .verified-banner {
+          width: 100%;
+          max-width: 400px;
+          background: rgba(109,191,138,0.08);
+          border: 1px solid rgba(109,191,138,0.25);
+          border-radius: 10px;
+          padding: 12px 16px;
+          margin-bottom: 16px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          font-size: 13px;
+          color: ${T.GREEN};
+          line-height: 1.4;
+        }
+        .verified-icon {
+          flex-shrink: 0;
+          width: 18px; height: 18px;
+          border-radius: 50%;
+          background: rgba(109,191,138,0.15);
+          display: flex; align-items: center; justify-content: center;
         }
 
         .card {
-          width: 100%;
-          max-width: 400px;
+          width: 100%; max-width: 400px;
           background: ${T.CARD_BG};
           border: 1px solid ${T.CARD_BORDER};
           border-radius: 12px;
@@ -136,83 +159,51 @@ export default function LoginPage() {
         }
 
         .pill {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
+          display: inline-flex; align-items: center; gap: 6px;
           padding: 4px 10px;
-          border: 1px solid rgba(201,169,110,0.3);
-          border-radius: 999px;
+          border: 1px solid rgba(201,169,110,0.3); border-radius: 999px;
           font-family: 'IBM Plex Mono', monospace;
-          font-size: 10px;
-          font-weight: 500;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: ${T.GOLD};
-          margin-bottom: 16px;
+          font-size: 10px; font-weight: 500;
+          letter-spacing: 0.08em; text-transform: uppercase;
+          color: ${T.GOLD}; margin-bottom: 16px;
         }
-        .pill-dot {
-          width: 5px; height: 5px;
-          border-radius: 50%;
-          background: ${T.GOLD};
-        }
+        .pill-dot { width: 5px; height: 5px; border-radius: 50%; background: ${T.GOLD}; }
 
         .heading {
           font-family: 'DM Serif Display', serif;
-          font-size: 28px;
-          font-weight: 400;
-          color: ${T.CREAM};
-          line-height: 1.2;
-          margin-bottom: 8px;
+          font-size: 28px; font-weight: 400; color: ${T.CREAM};
+          line-height: 1.2; margin-bottom: 8px;
         }
         .subheading {
-          font-size: 14px;
-          color: ${T.MUTED};
-          line-height: 1.5;
-          margin-bottom: 32px;
+          font-size: 14px; color: ${T.MUTED};
+          line-height: 1.5; margin-bottom: 32px;
         }
 
-        .field {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-          margin-bottom: 16px;
-        }
+        .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
         .label {
           font-family: 'IBM Plex Mono', monospace;
-          font-size: 10px;
-          font-weight: 500;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: ${T.DIM};
+          font-size: 10px; font-weight: 500;
+          letter-spacing: 0.08em; text-transform: uppercase; color: ${T.DIM};
         }
         .input {
           width: 100%;
           background: rgba(255,255,255,0.04);
           border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 8px;
-          padding: 11px 14px;
+          border-radius: 8px; padding: 11px 14px;
           font-family: 'IBM Plex Sans', sans-serif;
-          font-size: 14px;
-          color: ${T.CREAM};
-          outline: none;
+          font-size: 14px; color: ${T.CREAM}; outline: none;
           transition: border-color 0.15s;
         }
         .input::placeholder { color: ${T.DIM}; }
         .input:focus { border-color: ${T.GOLD}; }
 
         .btn-primary {
-          width: 100%;
-          margin-top: 8px;
-          padding: 13px;
-          border: none;
-          border-radius: 8px;
+          width: 100%; margin-top: 8px; padding: 13px;
+          border: none; border-radius: 8px;
           background: linear-gradient(135deg, ${T.GOLD} 0%, ${T.GOLD_DIM} 100%);
           font-family: 'IBM Plex Sans', sans-serif;
-          font-size: 14px;
-          font-weight: 600;
-          color: #0f0e0c;
-          cursor: pointer;
-          transition: opacity 0.15s, transform 0.1s;
+          font-size: 14px; font-weight: 600; color: #0f0e0c;
+          cursor: pointer; transition: opacity 0.15s, transform 0.1s;
           letter-spacing: 0.02em;
         }
         .btn-primary:hover:not(:disabled) { opacity: 0.88; }
@@ -220,11 +211,8 @@ export default function LoginPage() {
         .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
         .msg {
-          margin-top: 16px;
-          padding: 10px 14px;
-          border-radius: 8px;
-          font-size: 13px;
-          line-height: 1.4;
+          margin-top: 16px; padding: 10px 14px;
+          border-radius: 8px; font-size: 13px; line-height: 1.4;
         }
         .msg-error {
           background: rgba(224,112,112,0.08);
@@ -237,42 +225,28 @@ export default function LoginPage() {
           color: ${T.GOLD};
         }
 
-        .divider {
-          height: 1px;
-          background: ${T.CARD_BORDER};
-          margin: 28px 0;
-        }
+        .divider { height: 1px; background: ${T.CARD_BORDER}; margin: 28px 0; }
 
         .footer-row {
-          display: flex;
-          align-items: center;
+          display: flex; align-items: center;
           justify-content: space-between;
-          font-size: 13px;
-          color: ${T.MUTED};
+          font-size: 13px; color: ${T.MUTED};
         }
         .link {
-          color: ${T.GOLD};
-          background: none;
-          border: none;
-          cursor: pointer;
-          font-family: 'IBM Plex Sans', sans-serif;
-          font-size: 13px;
-          padding: 0;
-          text-decoration: none;
+          color: ${T.GOLD}; background: none; border: none;
+          cursor: pointer; font-family: 'IBM Plex Sans', sans-serif;
+          font-size: 13px; padding: 0; text-decoration: none;
           transition: opacity 0.15s;
         }
         .link:hover { opacity: 0.7; }
 
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner {
-          display: inline-block;
-          width: 14px; height: 14px;
+          display: inline-block; width: 14px; height: 14px;
           border: 2px solid rgba(15,14,12,0.3);
-          border-top-color: #0f0e0c;
-          border-radius: 50%;
+          border-top-color: #0f0e0c; border-radius: 50%;
           animation: spin 0.7s linear infinite;
-          vertical-align: middle;
-          margin-right: 6px;
+          vertical-align: middle; margin-right: 6px;
         }
       `}</style>
 
@@ -286,6 +260,17 @@ export default function LoginPage() {
           </div>
           <span className="wordmark-text">CIMScan</span>
         </a>
+
+        {verified && (
+          <div className="verified-banner">
+            <div className="verified-icon">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M2 5l2 2 4-4" stroke={T.GREEN} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </div>
+            <span>Email verified — you&apos;re all set. Sign in below to get started.</span>
+          </div>
+        )}
 
         <div className="card">
 

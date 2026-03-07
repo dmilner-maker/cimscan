@@ -7,22 +7,22 @@ import { useState, useEffect, useRef, useCallback, createContext, useContext } f
 // CONTENT — edit all page copy here or use the visual editor
 // ═══════════════════════════════════════════════════════════════════
 const DEFAULT_CONTENT = {
-  hero_badge: "Automated CIM diligence",
+  hero_badge: "Due Diligence accelerated by A.I.",
   hero_title_1: "Thesis pillars. Operational narrative. Diligence plan.",
   hero_title_2: "Just hit send.",
   hero_title_3: "",
   hero_subtitle: "Bypass the fluff and get a clear view of the operational narrative at the core of any CIM. CIMScan extracts and pressure tests a CIM's operational claims. You'll get a detailed set of suggested underwriting gates, diligence work streams, an interdependency analysis and thesis support related to growth, retention, margin, moat and risk. All in minutes.",
   hero_cta_primary: "Start scanning",
   hero_cta_secondary: "See how it works",
-  hero_trust: "Built for private equity diligence teams",
+  hero_trust: "Built for private equity deal teams",
 
   how_label: "How it works",
-  how_title_1: "Four steps from inbox",
-  how_title_2: "to investment committee",
+  how_title_1: "Four steps to a detailed diligence plan",
+  how_title_2: "",
   step1_title: "Email your CIM",
   step1_desc: "Send the CIM PDF to your firm's dedicated ingest address. CIMScan validates the file and creates a deal.",
   step2_title: "Configure your run",
-  step2_desc: "Choose CORE (25–28 claims) or FULL (45–60 claims) depth. Accept terms and authorize payment.",
+  step2_desc: "Choose CORE (25–30 claims) or FULL (45–60 claims) depth. Accept terms and authorize payment.",
   step3_title: "Pipeline runs",
   step3_desc: "Six sequential analytical stages extract claims, score underwriting gates, map interdependencies, and synthesize thesis pillars.",
   step4_title: "Receive deliverables",
@@ -30,7 +30,7 @@ const DEFAULT_CONTENT = {
 
   del_label: "Deliverables",
   del_title: "Two outputs, one pipeline",
-  del_subtitle: "Every run produces a structured workbook for analysts and a narrative document for IC.",
+  del_subtitle: "Every run produces a structured workbook for analysts and a narrative document to kickstart IC material development.",
   del1_title: "Dataset D",
   del1_desc: "A 12-sheet Excel workbook with the complete claim register, underwriting gates and kill thresholds, workstream execution plan, interdependency matrix, and thesis pillar validation checks.",
   del2_title: "IC Insights",
@@ -43,7 +43,7 @@ const DEFAULT_CONTENT = {
   pricing_label: "Pricing",
   pricing_title: "Pay per run. No subscriptions.",
   core_price: "$249",
-  core_claims: "25–28",
+  core_claims: "25–30",
   core_desc: "The right depth for initial screening. Covers major diligence surfaces with quantified underwriting gates.",
   full_price: "$399",
   full_claims: "45–60",
@@ -51,11 +51,11 @@ const DEFAULT_CONTENT = {
   pricing_note: "No charge if the CIM fails the quality gate. Payment is authorized on configuration and only captured on successful completion.",
 
   cta_title: "Start your first scan",
-  cta_subtitle: "Create your account, get your firm's ingest address, and email your first CIM. Deliverables arrive in minutes.",
+  cta_subtitle: "Create your account, get your firm's unique ingest email address, and email your first CIM. Deliverables arrive in minutes.",
   cta_button: "Create your account",
 
   trust_label: "Your data",
-  trust_title: "CIMs are confidential. We treat them that way.",
+  trust_title: "CIMs are confidential. We keep them that way.",
   trust_subtitle: "We know what you're sending us. Here's how we handle it.",
   trust1_title: "No model training",
   trust1_desc: "Your CIM content is never used to train AI models. We process via API with no data retention on the model side.",
@@ -408,24 +408,30 @@ function HowItWorks() {
 
 // ── DEMO VIDEO WITH CTA OVERLAY ──────────────────────────────────
 function DemoVideo() {
-  const videoRef = useRef(null);
-  const [playing, setPlaying] = useState(false);
+  const iframeRef = useRef(null);
+  const [started, setStarted] = useState(false);
   const [ended, setEnded] = useState(false);
 
-  const handlePlay = () => {
-    if (videoRef.current) {
-      videoRef.current.play();
-      setPlaying(true);
-      setEnded(false);
-    }
-  };
+  // Listen for Vimeo postMessage events to detect play/end
+  useEffect(() => {
+    const handler = (e) => {
+      if (!e.origin.includes("vimeo.com")) return;
+      try {
+        const data = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
+        if (data.event === "play") { setStarted(true); setEnded(false); }
+        if (data.event === "finish") { setEnded(true); }
+      } catch {}
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
 
   const handleReplay = () => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = 0;
-      videoRef.current.play();
-      setPlaying(true);
+    if (iframeRef.current) {
+      // Reload the iframe to replay
+      iframeRef.current.src = iframeRef.current.src;
       setEnded(false);
+      setStarted(false);
     }
   };
 
@@ -435,47 +441,14 @@ function DemoVideo() {
       background: "#0a0908", border: `1px solid ${CARD_BORDER}`,
       aspectRatio: "16/9",
     }}>
-      {/* Video element — replace src with your actual video */}
-      <video
-        ref={videoRef}
-        src=""
-        onEnded={() => { setPlaying(false); setEnded(true); }}
-        onPause={() => setPlaying(false)}
-        onPlay={() => { setPlaying(true); setEnded(false); }}
-        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-        playsInline
+      {/* Vimeo embed with API enabled for postMessage events */}
+      <iframe
+        ref={iframeRef}
+        src="https://player.vimeo.com/video/1171385471?api=1&background=0&color=c9a96e&title=0&byline=0&portrait=0"
+        style={{ width: "100%", height: "100%", border: "none", display: "block" }}
+        allow="autoplay; fullscreen; picture-in-picture"
+        allowFullScreen
       />
-
-      {/* Play button — shown before first play */}
-      {!playing && !ended && (
-        <div
-          onClick={handlePlay}
-          style={{
-            position: "absolute", inset: 0,
-            display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center",
-            background: "rgba(10,9,8,0.85)",
-            cursor: "pointer", transition: "background 0.3s",
-          }}
-          onMouseEnter={e => e.currentTarget.style.background = "rgba(10,9,8,0.75)"}
-          onMouseLeave={e => e.currentTarget.style.background = "rgba(10,9,8,0.85)"}
-        >
-          <div style={{
-            width: 72, height: 72, borderRadius: "50%",
-            background: `linear-gradient(135deg, ${GOLD}, ${GOLD_DIM})`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: "0 0 40px rgba(201,169,110,0.25)",
-            marginBottom: 16,
-          }}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="#1a1814" stroke="none">
-              <polygon points="8,5 20,12 8,19" />
-            </svg>
-          </div>
-          <span style={{ fontFamily: SANS, fontSize: 14, fontWeight: 500, color: MUTED }}>
-            Watch the demo
-          </span>
-        </div>
-      )}
 
       {/* CTA overlay — shown when video ends */}
       {ended && (

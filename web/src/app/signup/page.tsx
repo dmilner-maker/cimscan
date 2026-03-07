@@ -143,7 +143,7 @@ export default function SignupPage() {
               lineHeight: 1.5,
             }}
           >
-            Once verified, email any CIM to your firm's ingest address and CIMScan takes it from there.
+            Once verified, email any CIM to your firm&apos;s ingest address and CIMScan takes it from there.
           </div>
         </div>
       </Shell>
@@ -221,7 +221,7 @@ export default function SignupPage() {
                   textUnderlineOffset: 3,
                 }}
               >
-                My firm isn't listed
+                My firm isn&apos;t listed
               </button>
             </>
           ) : (
@@ -697,7 +697,7 @@ function FirmSearch({ selected, onSelect }) {
             fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
           }}
         >
-          No firms found matching "{query}"
+          No firms found matching &ldquo;{query}&rdquo;
         </div>
       )}
     </div>

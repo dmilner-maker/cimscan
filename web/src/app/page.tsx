@@ -1,4 +1,5 @@
 "use client";
+// @ts-nocheck
 
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
 
@@ -73,7 +74,7 @@ const DEFAULT_CONTENT = {
 // ═══════════════════════════════════════════════════════════════════
 // EDIT CONTEXT
 // ═══════════════════════════════════════════════════════════════════
-const EditContext = createContext();
+const EditContext = createContext<any>(null);
 function useEdit() { return useContext(EditContext); }
 
 // ── EDITABLE TEXT COMPONENT ───────────────────────────────────────

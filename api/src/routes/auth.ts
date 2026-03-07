@@ -242,36 +242,103 @@ authRouter.post("/auth/signup", async (req: Request, res: Response) => {
         to: email,
         subject: "Verify your CIMScan account",
         html: `
-          <div style="font-family: 'IBM Plex Sans', Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #0f0e0c; color: #f0ebe3; padding: 40px 32px; border-radius: 8px;">
-            <div style="margin-bottom: 32px;">
-              <span style="font-size: 18px; font-weight: 600; color: #c9a96e; letter-spacing: 0.02em;">CIMScan</span>
-            </div>
-            <h1 style="font-size: 22px; font-weight: 400; color: #f0ebe3; margin: 0 0 12px;">Verify your email address</h1>
-            <p style="font-size: 14px; color: #9a9488; line-height: 1.6; margin: 0 0 8px;">
-              Welcome to CIMScan${firmName ? ", " + firmName : ""}. Click below to verify your email and activate your account.
-            </p>
-            ${promoCode ? `
-            <p style="font-size: 14px; color: #9a9488; line-height: 1.6; margin: 0 0 24px;">
-              Your first analysis is on us — use code <strong style="color: #c9a96e;">${promoCode}</strong> when you configure your first run.
-            </p>
-            ` : '<div style="margin-bottom: 24px;"></div>'}
-            <a href="${verifyLink}"
-               style="display: inline-block; background: linear-gradient(135deg, #c9a96e 0%, #8a7448 100%);
-                      color: #0f0e0c; font-size: 14px; font-weight: 600; text-decoration: none;
-                      padding: 13px 28px; border-radius: 8px; letter-spacing: 0.02em;">
-              Verify email
-            </a>
-            <p style="font-size: 13px; color: #6a6258; margin: 28px 0 8px;">
-              Once verified, submit CIMs to:
-            </p>
-            <p style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #9a9488; margin: 0 0 28px;">
-              ${ingestAddress}
-            </p>
-            <p style="font-size: 12px; color: #6a6258; margin: 0; line-height: 1.5;">
-              If the button doesn't work, copy this link into your browser:<br/>
-              <span style="color: #9a9488; word-break: break-all;">${verifyLink}</span>
-            </p>
-          </div>
+          <!DOCTYPE html>
+          <html>
+          <head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+          <body style="margin:0;padding:0;background:#0f0e0c;">
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0f0e0c;">
+              <tr>
+                <td align="center" style="padding:40px 16px;">
+                  <table width="480" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;width:100%;">
+
+                    <!-- Wordmark -->
+                    <tr>
+                      <td style="padding-bottom:32px;">
+                        <span style="font-family:Arial,sans-serif;font-size:18px;font-weight:bold;color:#c9a96e;letter-spacing:1px;">CIMScan</span>
+                      </td>
+                    </tr>
+
+                    <!-- Heading -->
+                    <tr>
+                      <td style="padding-bottom:12px;">
+                        <p style="font-family:Georgia,'Times New Roman',serif;font-size:22px;font-weight:normal;color:#f0ebe3;margin:0;line-height:1.3;">Verify your email address</p>
+                      </td>
+                    </tr>
+
+                    <!-- Body text -->
+                    <tr>
+                      <td style="padding-bottom:8px;">
+                        <p style="font-family:Arial,sans-serif;font-size:14px;color:#9a9488;line-height:1.6;margin:0;">
+                          Welcome to CIMScan\${firmName ? ", " + firmName : ""}. Click the button below to verify your email and activate your account.
+                        </p>
+                      </td>
+                    </tr>
+
+                    <!-- Promo code (conditional) -->
+                    \${promoCode ? \`
+                    <tr>
+                      <td style="padding-bottom:28px;padding-top:8px;">
+                        <p style="font-family:Arial,sans-serif;font-size:14px;color:#9a9488;line-height:1.6;margin:0;">
+                          Your first analysis is on us — use code <span style="color:#c9a96e;font-weight:bold;">\${promoCode}</span> when you configure your first run.
+                        </p>
+                      </td>
+                    </tr>
+                    \` : \`<tr><td style="padding-bottom:28px;"></td></tr>\`}
+
+                    <!-- CTA Button (table-based for email client compatibility) -->
+                    <tr>
+                      <td style="padding-bottom:32px;">
+                        <table cellpadding="0" cellspacing="0" border="0">
+                          <tr>
+                            <td align="center" bgcolor="#c9a96e" style="border-radius:8px;">
+                              <a href="\${verifyLink}"
+                                 target="_blank"
+                                 style="display:inline-block;padding:14px 32px;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;color:#0f0e0c;text-decoration:none;border-radius:8px;letter-spacing:0.5px;">
+                                Verify email
+                              </a>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+
+                    <!-- Divider -->
+                    <tr>
+                      <td style="padding-bottom:20px;">
+                        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                          <tr><td style="border-top:1px solid rgba(255,255,255,0.06);font-size:0;">&nbsp;</td></tr>
+                        </table>
+                      </td>
+                    </tr>
+
+                    <!-- Ingest address -->
+                    <tr>
+                      <td style="padding-bottom:6px;">
+                        <p style="font-family:Arial,sans-serif;font-size:13px;color:#6a6258;margin:0;">Once verified, submit CIMs to:</p>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding-bottom:28px;">
+                        <p style="font-family:'Courier New',monospace;font-size:13px;color:#9a9488;margin:0;">\${ingestAddress}</p>
+                      </td>
+                    </tr>
+
+                    <!-- Fallback link -->
+                    <tr>
+                      <td>
+                        <p style="font-family:Arial,sans-serif;font-size:12px;color:#6a6258;margin:0;line-height:1.5;">
+                          If the button above doesn't work, copy this link into your browser:<br>
+                          <span style="color:#9a9488;word-break:break-all;">\${verifyLink}</span>
+                        </p>
+                      </td>
+                    </tr>
+
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
         `,
       });
 

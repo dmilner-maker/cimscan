@@ -1,10 +1,11 @@
 'use client'
 
-// web/src/app/reset-password/page.tsx
+// web/src/app/account/page.tsx
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 
+type Panel = 'main' | 'confirm-data' | 'confirm-account'
 type Status = 'idle' | 'loading' | 'success' | 'error'
 
 const T = {
@@ -19,76 +20,107 @@ const T = {
   ERROR:       '#e07070',
 }
 
-export default function ResetPasswordPage() {
-  const [password, setPassword]         = useState('')
-  const [confirm, setConfirm]           = useState('')
-  const [status, setStatus]             = useState<Status>('idle')
-  const [message, setMessage]           = useState('')
-  const [sessionReady, setSessionReady] = useState(false)
-  const [checking, setChecking]         = useState(true)
+interface AccountData {
+  email: string
+  display_name: string
+  firm_name: string
+  firm_website: string
+  ingest_address: string
+  role: string
+}
+
+export default function AccountPage() {
+  const [account, setAccount]   = useState<AccountData | null>(null)
+  const [panel, setPanel]       = useState<Panel>('main')
+  const [status, setStatus]     = useState<Status>('idle')
+  const [message, setMessage]   = useState('')
+  const [loading, setLoading]   = useState(true)
+  const [authError, setAuthError] = useState(false)
 
   useEffect(() => {
-    // Supabase processes the hash token automatically on client init.
-    // By the time this effect runs, the session should already be established.
-    // We listen for PASSWORD_RECOVERY or check for an existing session.
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if ((event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') && session) {
-        setSessionReady(true)
-        setChecking(false)
-      }
-    })
-
-    // Also check immediately — token may already be processed
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        setSessionReady(true)
-        setChecking(false)
-      } else {
-        // Give Supabase a moment to process the hash if session not ready yet
-        setTimeout(() => {
-          supabase.auth.getSession().then(({ data: { session: s } }) => {
-            if (s) {
-              setSessionReady(true)
-            }
-            setChecking(false)
-          })
-        }, 1000)
-      }
-    })
-
-    return () => { subscription.unsubscribe() }
+    loadAccount()
   }, [])
 
-  async function handleReset(e: React.FormEvent) {
-    e.preventDefault()
+  async function loadAccount() {
+    setLoading(true)
+
+    // Check auth session
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      window.location.href = '/login'
+      return
+    }
+
+    const token = session.access_token
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/user/account-info`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (res.status === 401) {
+        window.location.href = '/login'
+        return
+      }
+
+      if (!res.ok) throw new Error('Failed to load account')
+
+      const data = await res.json()
+      setAccount(data)
+    } catch {
+      setAuthError(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleDeleteData() {
+    setStatus('loading')
     setMessage('')
 
-    if (password.length < 8) {
-      setStatus('error')
-      setMessage('Password must be at least 8 characters.')
-      return
-    }
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) { window.location.href = '/login'; return }
 
-    if (password !== confirm) {
-      setStatus('error')
-      setMessage('Passwords do not match.')
-      return
-    }
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/user/data`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
 
+      if (!res.ok) throw new Error('Failed to delete data')
+
+      setStatus('success')
+      setMessage('All your deals and files have been deleted. Your account remains active.')
+      setPanel('main')
+    } catch {
+      setStatus('error')
+      setMessage('Something went wrong. Please try again.')
+      setPanel('main')
+    }
+  }
+
+  async function handleDeleteAccount() {
     setStatus('loading')
+    setMessage('')
 
-    const { error } = await supabase.auth.updateUser({ password })
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) { window.location.href = '/login'; return }
 
-    if (error) {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/user/account`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+
+      if (!res.ok) throw new Error('Failed to delete account')
+
+      await supabase.auth.signOut()
+      window.location.href = '/?deleted=true'
+    } catch {
       setStatus('error')
-      setMessage(error.message)
-      return
+      setMessage('Something went wrong. Please try again.')
+      setPanel('main')
     }
-
-    setStatus('success')
-    setMessage('Password updated. Redirecting to sign in…')
-    setTimeout(() => { window.location.href = '/login' }, 2000)
   }
 
   return (
@@ -114,7 +146,9 @@ export default function ResetPasswordPage() {
 
         .wordmark {
           display: flex; align-items: center; gap: 10px;
-          margin-bottom: 40px; text-decoration: none;
+          margin-bottom: 40px; text-decoration: none; align-self: flex-start;
+          margin-left: auto; margin-right: auto;
+          width: 100%; max-width: 480px;
         }
         .wordmark-icon {
           width: 32px; height: 32px;
@@ -127,10 +161,10 @@ export default function ResetPasswordPage() {
         }
 
         .card {
-          width: 100%; max-width: 400px;
+          width: 100%; max-width: 480px;
           background: ${T.CARD_BG};
           border: 1px solid ${T.CARD_BORDER};
-          border-radius: 12px; padding: 40px 36px 36px;
+          border-radius: 12px; padding: 36px;
         }
 
         .pill {
@@ -140,64 +174,125 @@ export default function ResetPasswordPage() {
           font-family: 'IBM Plex Mono', monospace;
           font-size: 10px; font-weight: 500;
           letter-spacing: 0.08em; text-transform: uppercase;
-          color: ${T.GOLD}; margin-bottom: 16px;
+          color: ${T.GOLD}; margin-bottom: 20px;
         }
         .pill-dot { width: 5px; height: 5px; border-radius: 50%; background: ${T.GOLD}; }
 
         .heading {
           font-family: 'DM Serif Display', serif;
-          font-size: 28px; font-weight: 400; color: ${T.CREAM};
-          line-height: 1.2; margin-bottom: 8px;
-        }
-        .subheading {
-          font-size: 14px; color: ${T.MUTED};
-          line-height: 1.5; margin-bottom: 32px;
+          font-size: 26px; font-weight: 400; color: ${T.CREAM};
+          line-height: 1.2; margin-bottom: 28px;
         }
 
-        .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
-        .label {
+        /* Info rows */
+        .info-section { margin-bottom: 28px; }
+        .section-label {
           font-family: 'IBM Plex Mono', monospace;
           font-size: 10px; font-weight: 500;
-          letter-spacing: 0.08em; text-transform: uppercase; color: ${T.DIM};
+          letter-spacing: 0.08em; text-transform: uppercase;
+          color: ${T.DIM}; margin-bottom: 12px;
         }
-        .input {
-          width: 100%;
+        .info-row {
+          display: flex; flex-direction: column; gap: 3px;
+          padding: 12px 0;
+          border-bottom: 1px solid ${T.CARD_BORDER};
+        }
+        .info-row:last-child { border-bottom: none; }
+        .info-key {
+          font-size: 11px; color: ${T.DIM};
+          font-family: 'IBM Plex Mono', monospace;
+          letter-spacing: 0.04em; text-transform: uppercase;
+        }
+        .info-val {
+          font-size: 14px; color: ${T.CREAM};
+        }
+        .info-val-mono {
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 13px; color: ${T.MUTED};
+        }
+        .role-badge {
+          display: inline-flex; align-items: center;
+          padding: 2px 8px; border-radius: 999px;
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 10px; font-weight: 500;
+          letter-spacing: 0.06em; text-transform: uppercase;
+          background: rgba(201,169,110,0.1);
+          border: 1px solid rgba(201,169,110,0.2);
+          color: ${T.GOLD};
+        }
+
+        .divider { height: 1px; background: ${T.CARD_BORDER}; margin: 24px 0; }
+
+        /* Danger zone */
+        .danger-section { margin-top: 4px; }
+        .danger-label {
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 10px; font-weight: 500;
+          letter-spacing: 0.08em; text-transform: uppercase;
+          color: ${T.DIM}; margin-bottom: 12px;
+        }
+        .danger-row {
+          display: flex; align-items: center;
+          justify-content: space-between; gap: 16px;
+          padding: 14px 0;
+          border-bottom: 1px solid ${T.CARD_BORDER};
+        }
+        .danger-row:last-child { border-bottom: none; }
+        .danger-info { flex: 1; }
+        .danger-title { font-size: 14px; color: ${T.CREAM}; margin-bottom: 3px; }
+        .danger-desc { font-size: 12px; color: ${T.DIM}; line-height: 1.4; }
+
+        .btn-danger {
+          flex-shrink: 0;
+          padding: 8px 16px; border-radius: 8px;
+          background: rgba(224,112,112,0.08);
+          border: 1px solid rgba(224,112,112,0.25);
+          font-family: 'IBM Plex Sans', sans-serif;
+          font-size: 13px; font-weight: 600;
+          color: ${T.ERROR}; cursor: pointer;
+          transition: background 0.15s, border-color 0.15s;
+          white-space: nowrap;
+        }
+        .btn-danger:hover { background: rgba(224,112,112,0.14); border-color: rgba(224,112,112,0.4); }
+        .btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* Confirm panel */
+        .confirm-heading {
+          font-family: 'DM Serif Display', serif;
+          font-size: 22px; color: ${T.CREAM};
+          margin-bottom: 12px;
+        }
+        .confirm-desc {
+          font-size: 14px; color: ${T.MUTED};
+          line-height: 1.6; margin-bottom: 28px;
+        }
+        .confirm-actions { display: flex; gap: 12px; }
+        .btn-cancel {
+          flex: 1; padding: 12px;
           background: rgba(255,255,255,0.04);
           border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 8px; padding: 11px 14px;
+          border-radius: 8px;
           font-family: 'IBM Plex Sans', sans-serif;
-          font-size: 14px; color: ${T.CREAM}; outline: none;
+          font-size: 14px; font-weight: 500;
+          color: ${T.MUTED}; cursor: pointer;
           transition: border-color 0.15s;
         }
-        .input::placeholder { color: ${T.DIM}; }
-        .input:focus { border-color: ${T.GOLD}; }
-        .input:disabled { opacity: 0.4; cursor: not-allowed; }
-
-        .strength-bar {
-          height: 3px; border-radius: 2px;
-          background: rgba(255,255,255,0.06);
-          margin-top: 6px; overflow: hidden;
-        }
-        .strength-fill {
-          height: 100%; border-radius: 2px;
-          transition: width 0.25s, background 0.25s;
-        }
-
-        .btn-primary {
-          width: 100%; margin-top: 8px; padding: 13px;
-          border: none; border-radius: 8px;
-          background: linear-gradient(135deg, ${T.GOLD} 0%, ${T.GOLD_DIM} 100%);
+        .btn-cancel:hover { border-color: rgba(255,255,255,0.15); }
+        .btn-confirm-danger {
+          flex: 1; padding: 12px;
+          background: rgba(224,112,112,0.1);
+          border: 1px solid rgba(224,112,112,0.3);
+          border-radius: 8px;
           font-family: 'IBM Plex Sans', sans-serif;
-          font-size: 14px; font-weight: 600; color: #0f0e0c;
-          cursor: pointer; transition: opacity 0.15s, transform 0.1s;
-          letter-spacing: 0.02em;
+          font-size: 14px; font-weight: 600;
+          color: ${T.ERROR}; cursor: pointer;
+          transition: background 0.15s;
         }
-        .btn-primary:hover:not(:disabled) { opacity: 0.88; }
-        .btn-primary:active:not(:disabled) { transform: scale(0.99); }
-        .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+        .btn-confirm-danger:hover { background: rgba(224,112,112,0.18); }
+        .btn-confirm-danger:disabled { opacity: 0.4; cursor: not-allowed; }
 
         .msg {
-          margin-top: 16px; padding: 10px 14px;
+          margin-top: 20px; padding: 10px 14px;
           border-radius: 8px; font-size: 13px; line-height: 1.4;
         }
         .msg-error {
@@ -211,33 +306,28 @@ export default function ResetPasswordPage() {
           color: ${T.GOLD};
         }
 
-        .divider { height: 1px; background: ${T.CARD_BORDER}; margin: 28px 0; }
-
         .back-link {
-          color: ${T.GOLD}; font-size: 13px; text-decoration: none;
-          transition: opacity 0.15s;
+          display: inline-flex; align-items: center; gap: 6px;
+          color: ${T.MUTED}; font-size: 13px; text-decoration: none;
+          margin-bottom: 24px; transition: color 0.15s; cursor: pointer;
+          background: none; border: none; padding: 0;
+          font-family: 'IBM Plex Sans', sans-serif;
         }
-        .back-link:hover { opacity: 0.7; }
+        .back-link:hover { color: ${T.CREAM}; }
 
-        .checking {
-          text-align: center; padding: 16px 0;
-          font-size: 13px; color: ${T.MUTED};
-        }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-        .dot {
-          display: inline-block; width: 6px; height: 6px;
-          border-radius: 50%; background: ${T.GOLD};
+        .skeleton {
+          height: 14px; border-radius: 4px;
+          background: rgba(255,255,255,0.06);
           animation: pulse 1.4s ease-in-out infinite;
-          margin: 0 2px; vertical-align: middle;
+          margin-bottom: 8px;
         }
-        .dot:nth-child(2) { animation-delay: 0.2s; }
-        .dot:nth-child(3) { animation-delay: 0.4s; }
 
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner {
           display: inline-block; width: 14px; height: 14px;
-          border: 2px solid rgba(15,14,12,0.3);
-          border-top-color: #0f0e0c; border-radius: 50%;
+          border: 2px solid rgba(224,112,112,0.2);
+          border-top-color: ${T.ERROR}; border-radius: 50%;
           animation: spin 0.7s linear infinite;
           vertical-align: middle; margin-right: 6px;
         }
@@ -254,91 +344,137 @@ export default function ResetPasswordPage() {
         </a>
 
         <div className="card">
-          <div className="pill"><span className="pill-dot" />New Password</div>
-          <h1 className="heading">Set a new password</h1>
-          <p className="subheading">Choose something strong — at least 8 characters.</p>
 
-          {checking ? (
-            <div className="checking">
-              Verifying link
-              <span className="dot" />
-              <span className="dot" />
-              <span className="dot" />
-            </div>
-          ) : !sessionReady ? (
+          {loading ? (
             <>
-              <p style={{ fontSize: 14, color: T.MUTED, marginBottom: 24 }}>
-                This reset link is invalid or has already been used. Request a new one from the login page.
-              </p>
-              <div className="divider" />
-              <a href="/login" className="back-link">← Back to sign in</a>
+              <div className="skeleton" style={{width: '40%'}} />
+              <div className="skeleton" style={{width: '70%'}} />
+              <div className="skeleton" style={{width: '55%'}} />
             </>
-          ) : (
+
+          ) : authError ? (
             <>
-              <form onSubmit={handleReset}>
-                <div className="field">
-                  <label className="label">New password</label>
-                  <input
-                    className="input"
-                    type="password"
-                    placeholder="••••••••"
-                    value={password}
-                    onChange={e => setPassword(e.target.value)}
-                    required
-                    disabled={status === 'loading' || status === 'success'}
-                    autoComplete="new-password"
-                    autoFocus
-                  />
-                  {password.length > 0 && (
-                    <div className="strength-bar">
-                      <div className="strength-fill" style={{
-                        width: `${Math.min(100, (password.length / 16) * 100)}%`,
-                        background: password.length < 8 ? T.ERROR : password.length < 12 ? T.GOLD_DIM : T.GOLD,
-                      }} />
-                    </div>
-                  )}
+              <p style={{fontSize: 14, color: T.MUTED, marginBottom: 20}}>
+                Could not load account details. Please try signing in again.
+              </p>
+              <a href="/login" style={{color: T.GOLD, fontSize: 13}}>← Back to sign in</a>
+            </>
+
+          ) : panel === 'main' ? (
+            <>
+              <div className="pill"><span className="pill-dot" />Account</div>
+              <h1 className="heading">Account settings</h1>
+
+              {/* Account info */}
+              <div className="info-section">
+                <div className="section-label">Your details</div>
+                <div className="info-row">
+                  <span className="info-key">Name</span>
+                  <span className="info-val">{account?.display_name || '—'}</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-key">Email</span>
+                  <span className="info-val">{account?.email}</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-key">Role</span>
+                  <span className="role-badge">{account?.role}</span>
+                </div>
+              </div>
+
+              {/* Firm info */}
+              <div className="info-section">
+                <div className="section-label">Your firm</div>
+                <div className="info-row">
+                  <span className="info-key">Firm</span>
+                  <span className="info-val">{account?.firm_name}</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-key">Website</span>
+                  <span className="info-val">{account?.firm_website}</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-key">Ingest address</span>
+                  <span className="info-val-mono">{account?.ingest_address}</span>
+                </div>
+              </div>
+
+              <div className="divider" />
+
+              {/* Danger zone */}
+              <div className="danger-section">
+                <div className="danger-label">Data & account</div>
+
+                <div className="danger-row">
+                  <div className="danger-info">
+                    <div className="danger-title">Delete all data</div>
+                    <div className="danger-desc">Removes all deals, CIMs, and output files. Your account stays active.</div>
+                  </div>
+                  <button className="btn-danger" onClick={() => { setPanel('confirm-data'); setStatus('idle'); setMessage('') }}>
+                    Delete data
+                  </button>
                 </div>
 
-                <div className="field">
-                  <label className="label">Confirm password</label>
-                  <input
-                    className="input"
-                    type="password"
-                    placeholder="••••••••"
-                    value={confirm}
-                    onChange={e => setConfirm(e.target.value)}
-                    required
-                    disabled={status === 'loading' || status === 'success'}
-                    autoComplete="new-password"
-                    style={{
-                      borderColor: confirm.length > 0 && confirm !== password
-                        ? 'rgba(224,112,112,0.5)' : undefined
-                    }}
-                  />
+                <div className="danger-row">
+                  <div className="danger-info">
+                    <div className="danger-title">Delete account</div>
+                    <div className="danger-desc">Permanently removes your account and all associated data. Cannot be undone.</div>
+                  </div>
+                  <button className="btn-danger" onClick={() => { setPanel('confirm-account'); setStatus('idle'); setMessage('') }}>
+                    Delete account
+                  </button>
                 </div>
-
-                <button
-                  className="btn-primary"
-                  type="submit"
-                  disabled={status === 'loading' || status === 'success'}
-                >
-                  {status === 'loading'
-                    ? <><span className="spinner" />Updating…</>
-                    : status === 'success' ? 'Password updated'
-                    : 'Set new password'}
-                </button>
-              </form>
+              </div>
 
               {message && (
                 <div className={`msg ${status === 'error' ? 'msg-error' : 'msg-success'}`}>
                   {message}
                 </div>
               )}
+            </>
 
-              <div className="divider" />
-              <a href="/login" className="back-link">← Back to sign in</a>
+          ) : panel === 'confirm-data' ? (
+            <>
+              <button className="back-link" onClick={() => setPanel('main')}>← Back</button>
+              <h2 className="confirm-heading">Delete all data?</h2>
+              <p className="confirm-desc">
+                This will permanently delete all your deals, uploaded CIMs, and output files.
+                Your account will remain active and you can continue submitting CIMs.
+                This cannot be undone.
+              </p>
+              <div className="confirm-actions">
+                <button className="btn-cancel" onClick={() => setPanel('main')}>Cancel</button>
+                <button
+                  className="btn-confirm-danger"
+                  onClick={handleDeleteData}
+                  disabled={status === 'loading'}
+                >
+                  {status === 'loading' ? <><span className="spinner" />Deleting…</> : 'Yes, delete all data'}
+                </button>
+              </div>
+            </>
+
+          ) : (
+            <>
+              <button className="back-link" onClick={() => setPanel('main')}>← Back</button>
+              <h2 className="confirm-heading">Delete your account?</h2>
+              <p className="confirm-desc">
+                This will permanently delete your account, all deals, all files, and remove you
+                from CIMScan entirely. This cannot be undone and there is no recovery option.
+              </p>
+              <div className="confirm-actions">
+                <button className="btn-cancel" onClick={() => setPanel('main')}>Cancel</button>
+                <button
+                  className="btn-confirm-danger"
+                  onClick={handleDeleteAccount}
+                  disabled={status === 'loading'}
+                >
+                  {status === 'loading' ? <><span className="spinner" />Deleting…</> : 'Yes, delete my account'}
+                </button>
+              </div>
             </>
           )}
+
         </div>
       </div>
     </>
